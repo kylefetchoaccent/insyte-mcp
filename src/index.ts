@@ -32,8 +32,10 @@ const instructions = `Read-only access to an Insyte Web tenant (CRM and job mana
 Workflow: call insyte_list_datasets to find the right data set, insyte_describe_dataset to learn its field names, then insyte_query. Never guess field names.
 
 OData tips:
-- Filter syntax: Status eq 'Open', Total gt 1000, contains(Name,'smith'), startswith(Email,'kerry'), and/or/not.
-- Dates are ISO 8601 without quotes: CreatedDate ge 2026-07-01T00:00:00Z.
+- Filter syntax: contains(LastName,'smith'), startswith(Email,'kerry'), JobDate ge 2026-07-01T00:00:00Z, and/or/not.
+- Dates are ISO 8601 without quotes.
+- Text values such as Status and Stage may be capitalised differently from their descriptions: use tolower(Stage) eq 'quote', or look at a few rows first.
+- Jobs and invoices carry no totals in API v2. Money is on the lines: expand JobLines or InvoiceLines with only the price fields you need and add them up.
 - Always pass select with only the fields you need; rows are large.
 - To count, use count=true with limit=1.
 - expand pulls in related records (e.g. SalesRep), at most three levels deep.
@@ -45,8 +47,8 @@ const server = new McpServer({ name: "insyte", version: "0.1.0" }, { instruction
 const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true } as const;
 
 const queryShape = {
-  select: z.string().optional().describe("Comma-separated fields to return, e.g. 'ID,JobNumber,Total'. Strongly recommended."),
-  filter: z.string().optional().describe("OData $filter expression, e.g. \"Status eq 'Open' and Total gt 5000\"."),
+  select: z.string().optional().describe("Comma-separated fields to return, e.g. 'ID,Reference,JobDate,Stage'. Strongly recommended."),
+  filter: z.string().optional().describe("OData $filter expression, e.g. \"tolower(Stage) eq 'quote' and JobDate ge 2026-07-01T00:00:00Z\"."),
   orderby: z.string().optional().describe("OData $orderby, e.g. 'CreatedDate desc'."),
   expand: z.string().optional().describe("OData $expand of navigation properties, e.g. 'SalesRep($select=FirstName,LastName)'."),
   limit: z.number().int().min(1).max(MAX_LIMIT).default(50).describe(`Maximum rows to return (1-${MAX_LIMIT}, default 50).`),
