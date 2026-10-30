@@ -24,7 +24,7 @@ Results are capped at 1,000 rows per call (and trimmed to fit Claude's context),
 
 ## Requirements
 
-- Node.js 20 or later.
+- Node.js 20 or later (Claude Desktop extension: not needed, it ships its own).
 - An Insyte tenant on the **Professional** edition with the API licensed (the API is in preview).
 - A **READ** API key: in Insyte, your name → Settings → Integration → Api Integration → New. Pick a
   dedicated Rep for the key; Claude sees exactly what that user can see. Creating keys needs
@@ -32,34 +32,45 @@ Results are capped at 1,000 rows per call (and trimmed to fit Claude's context),
 
 ## Install
 
+### Claude Desktop (easiest)
+
+1. Download `insyte-0.1.0.mcpb`.
+2. Double-click it (or Claude Desktop → Settings → Extensions → drag the file in) and click **Install**.
+3. Paste the API key when asked. Leave the endpoint and version at their defaults unless the
+   Api Integration page shows a different endpoint.
+
+Claude Desktop runs it with its built-in Node, so nothing else needs installing.
+
+### Claude Code
+
+Unzip `insyte-mcp-0.1.0.zip`, then (Node 20+ required):
+
 ```bash
-git clone <this repo> insyte-mcp && cd insyte-mcp
-npm install
-npm run build
+claude mcp add insyte -e INSYTE_API_KEY=paste-key-here -- node /full/path/to/insyte-mcp/server/index.mjs
 ```
 
-### Claude Desktop
+`server/index.mjs` is the whole server in one file; no `npm install` needed.
 
-Settings → Developer → Edit Config, then add (use the full path to `dist/index.js`):
+### Other MCP clients / manual Claude Desktop config
 
 ```json
 {
   "mcpServers": {
     "insyte": {
       "command": "node",
-      "args": ["C:\\Tools\\insyte-mcp\\dist\\index.js"],
+      "args": ["C:\\Tools\\insyte-mcp\\server\\index.mjs"],
       "env": { "INSYTE_API_KEY": "paste-key-here" }
     }
   }
 }
 ```
 
-Restart Claude Desktop.
-
-### Claude Code
+### From source
 
 ```bash
-claude mcp add insyte -e INSYTE_API_KEY=paste-key-here -- node /full/path/to/insyte-mcp/dist/index.js
+npm install
+npm run build      # TypeScript to dist/
+npm run package    # single-file bundle + release/insyte-<version>.mcpb (needs: npm i -g @anthropic-ai/mcpb)
 ```
 
 ### Several tenants
