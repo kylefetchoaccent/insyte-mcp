@@ -43,27 +43,75 @@ export interface QueryResult {
   rows: unknown[];
   hasMore: boolean;
   totalCount?: number;
+  // Fields left out because Insyte cannot read them on this tenant.
+  skipped?: string[];
 }
 
 export class InsyteError extends Error {
-  constructor(message: string, readonly status?: number) {
+  // incomplete: the API answered 200 but the body was cut off mid-JSON.
+  constructor(message: string, readonly status?: number, readonly incomplete = false) {
     super(message);
   }
 }
 
 const DESCRIPTION_TERM = "Org.OData.Core.V1.Description";
 
+// Insyte runs one API host per region. $metadata is public on both, so only an
+// authenticated request shows which one holds the key's tenant.
+export const KNOWN_HOSTS = ["https://api.myinsyte.com.au", "https://api.myinsyte.com"];
+
+// Status, Stage, Type and similar fields hold codes such as stage_job_quote.
+const CODE_VALUE = /^[a-z]+(_[a-z0-9]+)+$/;
+const CODE_SAMPLE_ROWS = 300;
+const MAX_CODES = 25;
+
 export class InsyteClient {
-  readonly base: string;
+  base = "";
   version = "";
+  // Set when no candidate host accepted the key; the server still starts so the
+  // metadata tools work, and data calls return the 401 with this explanation.
+  authWarning?: string;
   private sets = new Map<string, DataSet>();
+  private codes = new Map<string, Map<string, string[]>>();
+  private unreadable = new Map<string, Set<string>>();
+  private readonly candidates: string[];
 
   constructor(base: string, private readonly apiKey: string, private readonly requestedVersion: string) {
     // People paste the endpoint from the Api Integration page, which may include /v2 or /v3.
-    this.base = base.replace(/\/+$/, "").replace(/\/v\d+$/i, "");
+    const explicit = base.trim().toLowerCase() === "auto" ? "" : base.trim();
+    this.candidates = explicit ? [explicit.replace(/\/+$/, "").replace(/\/v\d+$/i, "")] : KNOWN_HOSTS;
   }
 
   async init(): Promise<void> {
+    const rejected: string[] = [];
+    let fallback: string | undefined;
+    let lastError: unknown;
+    for (const host of this.candidates) {
+      this.base = host;
+      try {
+        await this.load();
+      } catch (err) {
+        lastError = err;
+        continue;
+      }
+      fallback ??= host;
+      if (await this.keyAccepted()) return;
+      rejected.push(new URL(host).host);
+    }
+    if (!fallback) throw lastError;
+    if (this.base !== fallback) {
+      this.base = fallback;
+      await this.load();
+    }
+    this.authWarning =
+      `${rejected.join(" and ")} rejected INSYTE_API_KEY. The key may be wrong, deleted, or belong to a user without an API licence` +
+      (this.candidates.length === 1 ? `, or INSYTE_API_BASE may point at the wrong region (${otherHosts(this.base)}).` : ".");
+  }
+
+  private async load(): Promise<void> {
+    this.sets.clear();
+    this.codes.clear();
+    this.unreadable.clear();
     this.version = this.requestedVersion === "auto" ? await this.detectVersion() : this.requestedVersion;
     const xml = await this.text(`/${this.version}/$metadata`);
     const related = await this.loadRelated();
@@ -72,6 +120,48 @@ export class InsyteClient {
       this.sets.set(set.name.toLowerCase(), set);
     }
     if (this.sets.size === 0) throw new InsyteError(`No data sets found in ${this.base}/${this.version}/$metadata`);
+  }
+
+  // Only 401/403 counts as a rejection; any other failure is left for the tools to report.
+  private async keyAccepted(): Promise<boolean> {
+    const set = this.dataSets().find((s) => s.key.length === 1) ?? this.dataSets()[0];
+    try {
+      await this.json(`${this.base}/${this.version}/${set.name}?$top=1&$select=${set.key.join(",")}`);
+    } catch (err) {
+      if (err instanceof InsyteError && (err.status === 401 || err.status === 403)) return false;
+    }
+    return true;
+  }
+
+  // Code-valued string fields of a data set and the codes seen in its most recent records.
+  async codeValues(setName: string): Promise<Map<string, string[]>> {
+    const set = this.dataSet(setName);
+    const cached = this.codes.get(set.name);
+    if (cached) return cached;
+    const strings = set.fields.filter((f) => f.type === "Edm.String").map((f) => f.name);
+    const found = new Map<string, string[]>();
+    if (strings.length) {
+      const { rows } = await this.query(set.name, {
+        select: strings.join(","),
+        orderby: `${set.key[0]} desc`,
+        limit: CODE_SAMPLE_ROWS,
+      });
+      const seen = new Map<string, Set<string>>();
+      const plain = new Set<string>();
+      for (const row of rows as Record<string, unknown>[]) {
+        for (const name of strings) {
+          const v = row[name];
+          if (typeof v !== "string" || v === "") continue;
+          if (!CODE_VALUE.test(v)) plain.add(name);
+          else (seen.get(name) ?? seen.set(name, new Set()).get(name)!).add(v);
+        }
+      }
+      for (const [name, values] of seen) {
+        if (!plain.has(name) && values.size <= MAX_CODES) found.set(name, [...values].sort());
+      }
+    }
+    this.codes.set(set.name, found);
+    return found;
   }
 
   dataSets(): DataSet[] {
@@ -93,61 +183,146 @@ export class InsyteClient {
 
   async query(setName: string, opts: QueryOptions, relation?: { id: string | number; name: string }): Promise<QueryResult> {
     const set = this.dataSet(setName);
-    if (opts.select) checkSelect(set, opts.select);
-    let path = `/${this.version}/${set.name}`;
-    if (relation) {
-      const rel = set.related.find((r) => r.toLowerCase() === relation.name.toLowerCase());
-      if (!rel) {
-        throw new InsyteError(
-          `"${relation.name}" is not a related list of ${set.name}.` +
-            (set.related.length ? ` Available: ${set.related.join(", ")}.` : ` ${set.name} has no related lists.`),
-        );
-      }
-      path += `(${keyLiteral(set, relation.id)})/${rel}`;
+    if (!relation) {
+      if (opts.select) checkSelect(set, opts.select);
+      return this.readable(set, opts.select, (select) => this.list(`/${this.version}/${set.name}`, { ...opts, select }));
     }
 
-    const params = new URLSearchParams();
-    if (opts.select) params.set("$select", opts.select);
-    if (opts.filter) params.set("$filter", opts.filter);
-    if (opts.orderby) params.set("$orderby", opts.orderby);
-    if (opts.expand) params.set("$expand", opts.expand);
-    if (opts.skip) params.set("$skip", String(opts.skip));
-    if (opts.count) params.set("$count", "true");
-    // Ask for one extra row so we can tell the caller whether more exist.
-    params.set("$top", String(opts.limit + 1));
+    const rel = set.related.find((r) => r.toLowerCase() === relation.name.toLowerCase());
+    if (!rel) {
+      throw new InsyteError(
+        `"${relation.name}" is not a related list of ${set.name}.` +
+          (set.related.length ? ` Available: ${set.related.join(", ")}.` : ` ${set.name} has no related lists.`),
+      );
+    }
+    const path = `/${this.version}/${set.name}(${keyLiteral(set, relation.id)})/${rel}`;
+    const nav = set.navigations.find((n) => n.name === rel);
+    // select applies to the related records, not the parent.
+    const target = nav && this.dataSets().find((s) => s.typeName.split(".").pop() === nav.targetType);
+    if (opts.select && target) checkSelect(target, opts.select);
 
-    const rows: unknown[] = [];
-    let totalCount: number | undefined;
-    let url: string | undefined = `${this.base}${path}?${params}`;
-    while (url && rows.length <= opts.limit) {
-      let page: Record<string, unknown>;
+    return this.readable(target, opts.select, async (select) => {
+      const o = { ...opts, select };
       try {
-        page = (await this.json(url)) as Record<string, unknown>;
+        // A single-valued relation (e.g. JobLines(1)/Job) rejects paging options.
+        if (nav && !nav.collection) {
+          const page = (await this.json(this.url(path, { $select: o.select, $expand: o.expand }))) as Record<string, unknown>;
+          return { rows: [stripOData(page)], hasMore: false };
+        }
+        return await this.list(path, o);
       } catch (err) {
-        // Single-valued relations (e.g. JobLines(1)/Job) reject paging options.
-        if (!relation || rows.length || !(err instanceof InsyteError) || err.status !== 400) throw err;
-        const single = new URLSearchParams(params);
-        for (const p of ["$top", "$skip", "$count", "$filter", "$orderby"]) single.delete(p);
-        page = (await this.json(`${this.base}${path}${single.size ? `?${single}` : ""}`)) as Record<string, unknown>;
+        // Some relation routes return a truncated body, and a missing single record comes
+        // back as 404. The same data is reachable by expanding the parent.
+        if (nav && err instanceof InsyteError && (err.incomplete || err.status === 404)) {
+          return this.viaExpand(set, relation.id, nav, o);
+        }
+        // Without a navigation property the shape is unknown; a 400 means it is single-valued.
+        if (!nav && err instanceof InsyteError && err.status === 400) {
+          const page = (await this.json(this.url(path, { $select: o.select, $expand: o.expand }))) as Record<string, unknown>;
+          return Array.isArray(page.value) ? { rows: page.value.map(stripOData), hasMore: false } : { rows: [stripOData(page)], hasMore: false };
+        }
+        throw err;
       }
-      if (totalCount === undefined && typeof page["@odata.count"] === "number") totalCount = page["@odata.count"];
-      const value = page.value;
-      if (Array.isArray(value)) rows.push(...value);
-      else if (value === undefined) rows.push(stripOData(page)); // single-valued relation
-      url = typeof page["@odata.nextLink"] === "string" ? this.sameOrigin(page["@odata.nextLink"]) : undefined;
-    }
-    const hasMore = rows.length > opts.limit;
-    return { rows: rows.slice(0, opts.limit).map(stripOData), hasMore, totalCount };
+    });
   }
 
-  async get(setName: string, id: string | number, opts: { select?: string; expand?: string }): Promise<unknown> {
+  async get(setName: string, id: string | number, opts: { select?: string; expand?: string }): Promise<{ record: unknown; skipped?: string[] }> {
     const set = this.dataSet(setName);
     if (opts.select) checkSelect(set, opts.select);
-    const params = new URLSearchParams();
-    if (opts.select) params.set("$select", opts.select);
-    if (opts.expand) params.set("$expand", opts.expand);
-    const qs = params.size ? `?${params}` : "";
-    return stripOData(await this.json(`${this.base}/${this.version}/${set.name}(${keyLiteral(set, id)})${qs}`));
+    const path = `/${this.version}/${set.name}(${keyLiteral(set, id)})`;
+    const { rows, skipped } = await this.readable(set, opts.select, async (select) => ({
+      rows: [stripOData(await this.json(this.url(path, { $select: select, $expand: opts.expand })))],
+      hasMore: false,
+    }));
+    return { record: rows[0], skipped };
+  }
+
+  private async list(path: string, opts: QueryOptions): Promise<QueryResult> {
+    const rows: unknown[] = [];
+    let totalCount: number | undefined;
+    let url: string | undefined = this.url(path, {
+      $select: opts.select,
+      $filter: opts.filter,
+      $orderby: opts.orderby,
+      $expand: opts.expand,
+      $skip: opts.skip ? String(opts.skip) : undefined,
+      $count: opts.count ? "true" : undefined,
+      // Ask for one extra row so we can tell the caller whether more exist.
+      $top: String(opts.limit + 1),
+    });
+    while (url && rows.length <= opts.limit) {
+      const page = (await this.json(url)) as Record<string, unknown>;
+      if (totalCount === undefined && typeof page["@odata.count"] === "number") totalCount = page["@odata.count"];
+      if (Array.isArray(page.value)) rows.push(...page.value);
+      url = typeof page["@odata.nextLink"] === "string" ? this.sameOrigin(page["@odata.nextLink"]) : undefined;
+    }
+    return { rows: rows.slice(0, opts.limit).map(stripOData), hasMore: rows.length > opts.limit, totalCount };
+  }
+
+  private url(path: string, params: Record<string, string | undefined>): string {
+    const qs = new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => !!e[1]));
+    return `${this.base}${path}${qs.size ? `?${qs}` : ""}`;
+  }
+
+  // Some tenants' databases lack columns the API still maps (seen: SupplyJobLines.ProductBaseUnit),
+  // and any request that reads them fails with a 500. When the caller named no fields, find
+  // those columns once, leave them out from then on, and report them as skipped.
+  private async readable(target: DataSet | undefined, select: string | undefined, run: (select?: string) => Promise<QueryResult>): Promise<QueryResult> {
+    if (!target || select) return run(select);
+    for (let attempt = 0; ; attempt++) {
+      const skipped = [...(this.unreadable.get(target.name) ?? [])];
+      const fields = skipped.length ? target.fields.map((f) => f.name).filter((n) => !skipped.includes(n)).join(",") : undefined;
+      try {
+        const result = await run(fields);
+        return skipped.length ? { ...result, skipped } : result;
+      } catch (err) {
+        if (attempt > 0 || !(err instanceof InsyteError) || err.status !== 500) throw err;
+        let bad = unreadableColumns(err, target);
+        if (!bad.length) bad = await this.findUnreadable(target);
+        if (!bad.length) throw err;
+        this.unreadable.set(target.name, new Set([...skipped, ...bad]));
+      }
+    }
+  }
+
+  // List queries only say "Exception has been thrown"; fetching one whole record names the columns.
+  private async findUnreadable(set: DataSet): Promise<string[]> {
+    if (set.key.length !== 1) return [];
+    try {
+      const page = (await this.json(this.url(`/${this.version}/${set.name}`, { $top: "1", $select: set.key[0] }))) as { value?: Record<string, unknown>[] };
+      const id = page.value?.[0]?.[set.key[0]];
+      if (id === undefined) return [];
+      await this.json(this.url(`/${this.version}/${set.name}(${keyLiteral(set, id as string | number)})`, {}));
+    } catch (err) {
+      return unreadableColumns(err, set);
+    }
+    return [];
+  }
+
+  private async viaExpand(set: DataSet, id: string | number, nav: Navigation, opts: QueryOptions): Promise<QueryResult> {
+    const nested: string[] = [];
+    if (opts.select) nested.push(`$select=${opts.select}`);
+    if (opts.expand) nested.push(`$expand=${opts.expand}`);
+    if (nav.collection) {
+      if (opts.filter) nested.push(`$filter=${opts.filter}`);
+      if (opts.orderby) nested.push(`$orderby=${opts.orderby}`);
+      if (opts.skip) nested.push(`$skip=${opts.skip}`);
+      if (opts.count) nested.push("$count=true");
+      nested.push(`$top=${opts.limit + 1}`);
+    }
+    const params = new URLSearchParams({
+      $select: set.key.join(","),
+      $expand: nested.length ? `${nav.name}(${nested.join(";")})` : nav.name,
+    });
+    const parent = (await this.json(`${this.base}/${this.version}/${set.name}(${keyLiteral(set, id)})?${params}`)) as Record<string, unknown>;
+    const value = parent[nav.name];
+    const rows = Array.isArray(value) ? value : value == null ? [] : [value];
+    const count = parent[`${nav.name}@odata.count`];
+    return {
+      rows: rows.slice(0, opts.limit).map(stripOData),
+      hasMore: rows.length > opts.limit,
+      totalCount: typeof count === "number" ? count : undefined,
+    };
   }
 
   private async detectVersion(): Promise<string> {
@@ -197,7 +372,16 @@ export class InsyteClient {
 
   private async json(url: string): Promise<unknown> {
     const res = await this.fetch(url, "application/json");
-    return res.json();
+    const body = await res.text();
+    try {
+      return JSON.parse(body);
+    } catch {
+      throw new InsyteError(
+        `Insyte API returned an incomplete response for ${new URL(url).pathname} (${body.length} bytes, cut off mid-JSON). This is a fault in the Insyte API; try the same data through insyte_query with a filter.`,
+        res.status,
+        true,
+      );
+    }
   }
 
   private async fetch(url: string, accept: string): Promise<Response> {
@@ -211,11 +395,16 @@ export class InsyteClient {
       throw new InsyteError(`Could not reach ${new URL(url).host}: ${(err as Error).message}`);
     }
     if (res.ok) return res;
-    throw new InsyteError(explain(res.status, await res.text()), res.status);
+    throw new InsyteError(explain(res.status, await res.text(), new URL(url).origin, this.candidates.length === 1), res.status);
   }
 }
 
-function explain(status: number, body: string): string {
+function otherHosts(base: string): string {
+  const others = KNOWN_HOSTS.filter((h) => h !== base);
+  return others.length ? `the other Insyte endpoint is ${others.join(", ")}` : "check the API Endpoint on the Api Integration page";
+}
+
+function explain(status: number, body: string, origin: string, explicitBase: boolean): string {
   let detail = body.slice(0, 500);
   try {
     const parsed = JSON.parse(body);
@@ -225,13 +414,24 @@ function explain(status: number, body: string): string {
   }
   const hint =
     status === 401 || status === 403
-      ? " Check INSYTE_API_KEY: the key must exist under Settings > Integration > Api Integration, belong to a licensed user, and have READ scope."
+      ? ` ${new URL(origin).host} rejected INSYTE_API_KEY. The key must exist under Settings > Integration > Api Integration, belong to a licensed user, and have READ scope.` +
+        (explicitBase ? ` INSYTE_API_BASE must also match the API Endpoint shown on that page (${otherHosts(origin)}).` : "")
       : status === 400
         ? " The OData query is probably invalid; check field names with insyte_describe_dataset."
         : status === 404
           ? " The record or route does not exist."
-          : "";
+          : status === 500 && /Invalid column name/.test(detail)
+            ? " Insyte cannot read those fields on this system; leave them out of select."
+            : status >= 500
+              ? " This is a server error inside Insyte. Passing select with only the fields you need sometimes avoids it."
+              : "";
   return `Insyte API returned ${status}${detail ? `: ${detail}` : "."}${hint}`;
+}
+
+function unreadableColumns(err: unknown, set: DataSet): string[] {
+  if (!(err instanceof InsyteError) || err.status !== 500) return [];
+  const named = [...err.message.matchAll(/Invalid column name '(\w+)'/g)].map((m) => m[1]);
+  return set.fields.map((f) => f.name).filter((n) => named.includes(n));
 }
 
 function keyLiteral(set: DataSet, id: string | number): string {

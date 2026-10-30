@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="#step-2--install-in-claude"><b>Download</b></a> ·
-  <a href="#step-1--create-an-api-key-in-insyte">Setup guide</a> ·
+  <a href="#step-2-install-in-claude"><b>Download</b></a> ·
+  <a href="#step-1-create-an-api-key-in-insyte">Setup guide</a> ·
   <a href="#troubleshooting">Troubleshooting</a> ·
   <a href="#for-developers">For developers</a>
 </p>
@@ -42,7 +42,7 @@ Tick these off first. Most setup problems come from one of them.
 
 ---
 
-## Step 1 — Create an API key in Insyte
+## Step 1: Create an API key in Insyte
 
 *Done once by an Insyte admin. Each person can have their own key, or several people can share one.*
 
@@ -82,7 +82,7 @@ and make a new one instead.
 
 ---
 
-## Step 2 — Install in Claude
+## Step 2: Install in Claude
 
 Pick the app you use. You only need one.
 
@@ -113,11 +113,11 @@ One command in the terminal.
 
 <p align="center"><img src="docs/images/desktop.png" alt="Claude Desktop install: 1 download the .mcpb file, 2 double-click it or drag it onto Claude, 3 click Install and paste your key, 4 start a new chat and ask" width="880"></p>
 
-1. Download **[`insyte-0.1.0.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.1.0.mcpb)** (click the link; it downloads straight away).
+1. Download **[`insyte-0.1.1.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.1.1.mcpb)** (click the link; it downloads straight away).
 2. **Double-click** the file. If that doesn't open Claude, drag the file onto the Claude Desktop window.
 3. Claude shows the Insyte extension. Click **Install**.
 4. Paste your API key into **Insyte API key**. Leave **API endpoint** and **API version** as they are.
-5. Start a **new chat** and ask a question (see [Step 3](#step-3--try-it)).
+5. Start a **new chat** and ask a question (see [Step 3](#step-3-try-it)).
 
 <details>
 <summary><b>Double-clicking didn't work? Install it from Settings instead</b></summary>
@@ -140,8 +140,9 @@ Then continue from step 3 above.
 
 <br>
 
-Almost never. Only change it if the **API Endpoint** shown at the top of your Api Integration page
-does not start with `https://api.myinsyte.com.au`. Click the copy icon beside it and paste that into
+You shouldn't need to. Left as `auto`, the extension tries each Insyte region and keeps the one that
+accepts your key. If Claude reports that Insyte rejected a key you know is right, copy the
+**API Endpoint** shown at the top of your Api Integration page with the copy icon and paste it into
 **API endpoint**.
 
 <p align="center"><img src="docs/images/05-endpoint.png" alt="Api Integration page: copy the API Endpoint with the copy icon" width="420"></p>
@@ -150,7 +151,7 @@ does not start with `https://api.myinsyte.com.au`. Click the copy icon beside it
 
 ### 2B · Claude Code
 
-1. Download **[`insyte-mcp-0.1.0.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.1.0.zip)**
+1. Download **[`insyte-mcp-0.1.1.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.1.1.zip)**
    and unzip it somewhere permanent, for example your home folder. You should end up with
    `insyte-mcp/server/index.mjs`.
 2. In a terminal, run the command for your system with your own key in place of `your-api-key`:
@@ -182,7 +183,7 @@ it to the current project only.
 
 ---
 
-## Step 3 — Try it
+## Step 3: Try it
 
 Open a **new** chat (Claude Desktop) or session (Claude Code) and ask something like:
 
@@ -217,8 +218,9 @@ Claude works in three moves, and you'll see them in the chat:
 
 | What you see | What it means | Fix |
 |---|---|---|
-| `Insyte API returned 401` or `403` | The key is wrong, deleted, or its user isn't licensed | Copy the key again from Api Integration (Step 1.4) and reinstall, or create a new key. |
-| `Could not reach api.myinsyte.com.au` | No internet, or a firewall/proxy is blocking the API | Check you're online. On a work network, ask IT to allow `api.myinsyte.com.au`. |
+| `Insyte API returned 401` or `403`, or `rejected INSYTE_API_KEY` | The key is wrong, deleted, or its user isn't licensed. If you changed **API endpoint**, it may point at the wrong region. | Copy the key again from Api Integration (Step 1.4) and reinstall, or create a new key. Set **API endpoint** back to `auto`, or paste the endpoint from your Api Integration page. |
+| `Could not reach` followed by an Insyte address | No internet, or a firewall or proxy blocks the API | Check you're online. On a work network, ask IT to allow the API Endpoint shown on your Api Integration page. |
+| `Left out …: Insyte cannot read these fields on this system` | Your Insyte database lacks columns the API expects | You still get the rest of each record. Tell Accent Software support which fields it names. |
 | Claude says it has no Insyte tools | The chat was open before you installed | Start a **new** chat. If that doesn't help, quit Claude completely and reopen it. |
 | No **Extensions** in Claude Desktop settings | Your Claude admin has turned extensions off | Ask your Claude admin, or use Claude Code instead. |
 | `node: command not found` (Claude Code) | Node.js isn't installed | Install Node.js 20+ from [nodejs.org](https://nodejs.org), open a new terminal, and rerun the command. |
@@ -278,9 +280,22 @@ Remember to delete the key in Insyte if it is no longer used.
 <br>
 
 At startup the server reads the API's `$metadata`, so every data set the system exposes is available
-with Insyte's own field descriptions and no per-entity code. On `api.myinsyte.com.au` that is 32 data
-sets on API v2: Jobs, JobLines, Contacts, Companies, Opportunities, Invoices, Payments, SupplyJobs,
-commissions and more. When the host offers API v3 (Insyte 26.3.0.0+) it switches to v3 automatically.
+with Insyte's own field descriptions and no per-entity code. API v2 exposes 32 to 37 data sets
+depending on the region: Jobs, JobLines, Contacts, Companies, Opportunities, Invoices, Payments,
+SupplyJobs, commissions and more. When the host offers API v3 (Insyte 26.3.0.0+) the server uses v3.
+
+With `INSYTE_API_BASE` unset or `auto`, it tries each Insyte region at startup and keeps the one
+that accepts the key. Insyte serves `$metadata` without a key, so only an authenticated request
+shows which region holds the tenant.
+
+Fields such as `Status` and `Stage` hold codes like `stage_job_quote`, while Insyte's descriptions
+use plain words ("quote, order or lost"). `insyte_describe_dataset` samples the 300 newest records
+and lists the codes it finds, so Claude filters on `Stage eq 'stage_job_quote'`.
+
+Insyte has two faults the server works around. Some related-list routes return a cut-off body or a
+404 for an empty single record; the server then fetches the same data by expanding the parent. Some
+tenants' databases lack columns the API still maps (seen on `SupplyJobLines`); when a request names
+no fields, the server finds those columns, leaves them out, and says so in the result.
 
 | Tool | What it does |
 |---|---|
@@ -303,7 +318,7 @@ Results are capped at 1,000 rows per call and trimmed to fit Claude's context, w
 | Variable | Default | Notes |
 |---|---|---|
 | `INSYTE_API_KEY` | (required) | READ key from Api Integration |
-| `INSYTE_API_BASE` | `https://api.myinsyte.com.au` | The *API Endpoint* from the Api Integration page; a trailing `/v1`, `/v2` or `/v3` is fine |
+| `INSYTE_API_BASE` | `auto` | `auto` tries each Insyte region. Or paste the *API Endpoint* from the Api Integration page; a trailing `/v1`, `/v2` or `/v3` is fine |
 | `INSYTE_API_VERSION` | `auto` | `v2`, `v3`, or `auto` (v3 when available) |
 
 Manual config for Claude Desktop (`claude_desktop_config.json`) or other MCP clients:
@@ -339,6 +354,14 @@ INSYTE_API_KEY=... npm run smoke
 
 `test/smoke.mjs` drives the server over stdio the way Claude does and prints each tool's output.
 `node test/paging.mjs <metadata.xml>` runs it against a local mock API to check paging.
+
+```bash
+INSYTE_API_KEY=... npm run test:live
+```
+
+`test/live.mjs` asserts against a live tenant: every data set with and without `select`, every
+related list, the codes in `insyte_describe_dataset`, paging, and error messages. It prints IDs and
+counts, never record contents, and exits 1 on any failure.
 
 </details>
 

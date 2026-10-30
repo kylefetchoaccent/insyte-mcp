@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "insyte",
   "display_name": "Insyte",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read-only access to an Insyte Web tenant: jobs, job lines, contacts, companies, opportunities, invoices, payments and more.",
   "long_description": "Lets Claude query an Insyte Web tenant through the Insyte API (OData). It reads the API's metadata at startup, so every data set the tenant exposes is available with Insyte's own field descriptions. Read-only. Needs a READ API key from Settings > Integration > Api Integration (Professional edition, API licensed). Claude sees exactly what the key's Rep can see.",
   "author": { "name": "Accent Software" },
@@ -37,8 +37,8 @@
     "api_base": {
       "type": "string",
       "title": "API endpoint",
-      "description": "The API Endpoint shown on the Api Integration page.",
-      "default": "https://api.myinsyte.com.au",
+      "description": "Leave as auto to use the Insyte region that accepts your key. To set it by hand, paste the API Endpoint shown on the Api Integration page.",
+      "default": "auto",
       "required": false
     },
     "api_version": {

@@ -3,13 +3,14 @@
 //
 // Environment:
 //   INSYTE_API_KEY      required. A READ-scope key from Settings > Integration > Api Integration.
-//   INSYTE_API_BASE     optional. The API Endpoint shown on that page (default https://api.myinsyte.com.au).
+//   INSYTE_API_BASE     optional. The API Endpoint shown on that page, or auto (default: try each
+//                       Insyte region and use the one that accepts the key).
 //   INSYTE_API_VERSION  optional. v2, v3 or auto (default auto: v3 when the host offers it).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { DataSet, InsyteClient, InsyteError } from "./insyte.js";
+import { DataSet, InsyteClient, InsyteError, QueryResult } from "./insyte.js";
 
 const MAX_LIMIT = 1000;
 // Keep a single tool result comfortably inside Claude's context.
@@ -22,7 +23,7 @@ if (!apiKey) {
 }
 
 const client = new InsyteClient(
-  process.env.INSYTE_API_BASE?.trim() || "https://api.myinsyte.com.au",
+  process.env.INSYTE_API_BASE?.trim() || "auto",
   apiKey,
   (process.env.INSYTE_API_VERSION?.trim() || "auto").toLowerCase(),
 );
@@ -34,7 +35,7 @@ Workflow: call insyte_list_datasets to find the right data set, insyte_describe_
 OData tips:
 - Filter syntax: contains(LastName,'smith'), startswith(Email,'kerry'), JobDate ge 2026-07-01T00:00:00Z, and/or/not.
 - Dates are ISO 8601 without quotes.
-- Text values such as Status and Stage may be capitalised differently from their descriptions: use tolower(Stage) eq 'quote', or look at a few rows first.
+- Status, Stage, Type and similar fields hold codes such as stage_job_quote, status_job_open or status_invoice_sent, not the plain words in their descriptions. Filtering on the plain word (Stage eq 'quote') matches nothing and gives a wrong count of zero. insyte_describe_dataset lists the codes seen in recent records; filter on the exact code, e.g. Stage eq 'stage_job_quote'.
 - Jobs and invoices carry no totals in API v2. Money is on the lines: expand JobLines or InvoiceLines with only the price fields you need and add them up.
 - Always pass select with only the fields you need; rows are large.
 - To count, use count=true with limit=1.
@@ -42,13 +43,13 @@ OData tips:
 
 The API key acts as one Insyte user, so results are limited to what that user may see. Records contain customer personal details; only surface what the user asked for.`;
 
-const server = new McpServer({ name: "insyte", version: "0.1.0" }, { instructions });
+const server = new McpServer({ name: "insyte", version: "0.1.1" }, { instructions });
 
 const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true } as const;
 
 const queryShape = {
   select: z.string().optional().describe("Comma-separated fields to return, e.g. 'ID,Reference,JobDate,Stage'. Strongly recommended."),
-  filter: z.string().optional().describe("OData $filter expression, e.g. \"tolower(Stage) eq 'quote' and JobDate ge 2026-07-01T00:00:00Z\"."),
+  filter: z.string().optional().describe("OData $filter expression, e.g. \"Stage eq 'stage_job_quote' and JobDate ge 2026-07-01T00:00:00Z\". Code fields take the codes insyte_describe_dataset lists."),
   orderby: z.string().optional().describe("OData $orderby, e.g. 'CreatedDate desc'."),
   expand: z.string().optional().describe("OData $expand of navigation properties, e.g. 'SalesRep($select=FirstName,LastName)'."),
   limit: z.number().int().min(1).max(MAX_LIMIT).default(50).describe(`Maximum rows to return (1-${MAX_LIMIT}, default 50).`),
@@ -71,7 +72,8 @@ server.registerTool(
       ].filter(Boolean);
       return `- ${s.name}${s.description ? ` — ${s.description}` : ""} (${s.fields.length} fields${extras.length ? `; ${extras.join("; ")}` : ""})`;
     });
-    return text(`Insyte API ${client.version} at ${client.base}\n\n${lines.join("\n")}`);
+    const warning = client.authWarning ? `\n\nWARNING: ${client.authWarning} Data queries will fail until this is fixed.` : "";
+    return text(`Insyte API ${client.version} at ${client.base}${warning}\n\n${lines.join("\n")}`);
   },
 );
 
@@ -79,11 +81,18 @@ server.registerTool(
   "insyte_describe_dataset",
   {
     title: "Describe an Insyte data set",
-    description: "Show the fields (name, type, description), key, navigation properties and related lists of one data set. Call before querying.",
+    description:
+      "Show the fields (name, type, description), key, navigation properties and related lists of one data set, plus the codes that Status, Stage and similar fields actually hold. Call before querying.",
     inputSchema: { dataset: z.string().describe("Data set name from insyte_list_datasets, e.g. 'Jobs'.") },
     annotations: readOnly,
   },
-  async ({ dataset }) => run(() => text(describeSet(client.dataSet(dataset)))),
+  async ({ dataset }) =>
+    run(async () => {
+      const set = client.dataSet(dataset);
+      // Codes come from live records; without them (e.g. a rejected key) the description still stands.
+      const codes = await client.codeValues(set.name).catch(() => undefined);
+      return text(describeSet(set, codes));
+    }),
 );
 
 server.registerTool(
@@ -111,7 +120,11 @@ server.registerTool(
     },
     annotations: readOnly,
   },
-  async ({ dataset, id, select, expand }) => run(async () => json(await client.get(dataset, id, { select, expand }))),
+  async ({ dataset, id, select, expand }) =>
+    run(async () => {
+      const { record, skipped } = await client.get(dataset, id, { select, expand });
+      return json(skipped ? { note: skippedNote(skipped), record } : record);
+    }),
 );
 
 server.registerTool(
@@ -132,10 +145,14 @@ server.registerTool(
     run(async () => page(await client.query(dataset, opts, { id, name: relation }), opts.skip ?? 0, opts.limit)),
 );
 
-function describeSet(s: DataSet): string {
+function describeSet(s: DataSet, codes?: Map<string, string[]>): string {
   const out = [`# ${s.name}`, s.description ?? "", `Key: ${s.key.join(", ")}`, "", "## Fields"];
   for (const f of s.fields) {
-    out.push(`- ${f.name} (${f.type.replace(/^Edm\./, "")}${f.nullable ? "" : ", required"})${f.description ? ` — ${f.description}` : ""}`);
+    const seen = codes?.get(f.name);
+    out.push(
+      `- ${f.name} (${f.type.replace(/^Edm\./, "")}${f.nullable ? "" : ", required"})${f.description ? ` — ${f.description}` : ""}` +
+        (seen ? ` Codes seen in recent records (filter on these, not the words above): ${seen.join(", ")}.` : ""),
+    );
   }
   if (s.navigations.length) {
     out.push("", "## Expandable (use in expand)");
@@ -147,7 +164,11 @@ function describeSet(s: DataSet): string {
   return out.filter((l, i) => l !== "" || i > 1).join("\n");
 }
 
-function page(result: { rows: unknown[]; hasMore: boolean; totalCount?: number }, skip: number, limit: number) {
+function skippedNote(skipped: string[]) {
+  return `Left out ${skipped.join(", ")}: Insyte cannot read these fields on this system.`;
+}
+
+function page(result: QueryResult, skip: number, limit: number) {
   let rows = result.rows;
   let truncated = false;
   // Drop rows from the end until the payload fits, and tell Claude how to get the rest.
@@ -162,6 +183,7 @@ function page(result: { rows: unknown[]; hasMore: boolean; totalCount?: number }
     hasMore,
     ...(hasMore ? { nextSkip: skip + rows.length } : {}),
     ...(truncated ? { note: `Cut to ${rows.length} of ${limit} rows to fit; narrow select or lower limit.` } : {}),
+    ...(result.skipped ? { skipped: skippedNote(result.skipped) } : {}),
     rows,
   });
 }
@@ -191,3 +213,4 @@ try {
 }
 await server.connect(new StdioServerTransport());
 console.error(`Insyte MCP ready: ${client.dataSets().length} data sets from ${client.base}/${client.version}`);
+if (client.authWarning) console.error(`Insyte MCP warning: ${client.authWarning}`);
