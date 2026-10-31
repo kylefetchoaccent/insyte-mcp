@@ -45,8 +45,9 @@ Names are what you call the system when you ask Claude, e.g. "acme" or "acme-nz"
 async function add(args: string[]): Promise<number> {
   const name = checkName(args[0] ?? "");
   const at = args.indexOf("--endpoint");
+  // InsyteClient checks the endpoint (https only, scheme optional) when it connects.
   const endpoint = at >= 0 ? args[at + 1] : "auto";
-  if (at >= 0 && !/^https:\/\/[^\s/]+/i.test(endpoint ?? "")) throw new Error("--endpoint needs an https:// address.");
+  if (at >= 0 && !endpoint?.trim()) throw new Error("--endpoint needs an address.");
 
   const key = await readSecret(`API key for ${name}: `);
   if (!key) throw new Error("No key entered; nothing changed.");

@@ -12,8 +12,12 @@ const srv = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
   // Like Insyte: $metadata is public, everything else needs the key.
   if (u.pathname === "/v2/$metadata") { res.writeHead(200, { "content-type": "application/xml" }).end(metadata); return; }
-  if (!/^\/v2\/\w+$/.test(u.pathname)) { res.writeHead(404).end(); return; }
+  if (!/^\/v2\/\w+(\(\d+\))?$/.test(u.pathname)) { res.writeHead(404).end(); return; }
   if (req.headers.authorization !== "X-ApiKey testkey") { res.writeHead(401).end(); return; }
+  // One record bigger than the output cap on its own.
+  const BIG = { ID: 999, Notes: "x".repeat(120_000) };
+  if (u.pathname === "/v2/Jobs(999)") { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(BIG)); return; }
+  if (u.pathname === "/v2/Jobs" && u.searchParams.get("$filter") === "ID eq 999") { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ value: [BIG] })); return; }
   if (u.pathname !== "/v2/Jobs") { res.writeHead(200, { "content-type": "application/json" }).end('{"value":[]}'); return; }
   const top = +u.searchParams.get("$top"), skip = +(u.searchParams.get("$skip") ?? 0);
   const pageSize = 2, take = Math.min(top, pageSize);
@@ -44,6 +48,10 @@ r = await call({ dataset: "Jobs", limit: 5, skip: 5 });
 check("skip 5 returns the rest, no more", ids(r) === "6,7" && r.hasMore === false && r.nextSkip === undefined, r);
 r = await call({ dataset: "Jobs", limit: 7 });
 check("limit equal to total: all rows, no more", ids(r) === "1,2,3,4,5,6,7" && r.hasMore === false, r);
+r = await call({ dataset: "Jobs", filter: "ID eq 999", limit: 1 });
+check("one oversized row: refused with a hint, not returned over the cap", typeof r === "string" && /over the 60000-character limit/.test(r) && /select/.test(r), typeof r === "string" ? r.slice(0, 120) : r.returned);
+const rec = await client.callTool({ name: "insyte_get_record", arguments: { dataset: "Jobs", id: 999 } });
+check("oversized get_record refused too", rec.isError && /over the 60000-character limit/.test(rec.content[0].text), rec.content[0].text.slice(0, 120));
 evil = true;
 r = await call({ dataset: "Jobs", limit: 5 });
 check("foreign nextLink refused", typeof r === "string" && /Refusing to follow next page link to http:\/\/evil\.example/.test(r), r);

@@ -32,6 +32,8 @@ const cli = (args, input = "") => {
 const short = (s) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 // Even if a check throws, leave no test keys in the credential store.
 let cleanedUp = false;
+// Ctrl+C skips "exit" unless the process exits through it.
+process.on("SIGINT", () => process.exit(130));
 process.on("exit", () => {
   if (cleanedUp) return;
   for (const name of ["alpha", "beta"]) spawnSync("node", [entry, "remove", name], { env });
@@ -52,7 +54,10 @@ r = cli(["test"]);
 check("test passes for both", r.status === 0 && (r.stdout.match(/^OK/gm) ?? []).length === 2, short(r.stdout));
 
 const client = new Client({ name: "systems", version: "0" });
-await client.connect(new StdioClientTransport({ command: "node", args: [entry], env, stderr: "inherit" }));
+const transport = new StdioClientTransport({ command: "node", args: [entry], env, stderr: "pipe" });
+// The server's own log goes in the key scan too.
+transport.stderr?.on("data", (d) => seen.push(String(d)));
+await client.connect(transport);
 const call = async (name, args) => {
   const res = await client.callTool({ name, arguments: args });
   const body = res.content.map((c) => c.text).join("\n");

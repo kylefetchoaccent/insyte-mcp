@@ -113,10 +113,10 @@ const big = await call("insyte_query", { dataset: "Jobs", select: "ID", limit: 1
 check("limit 1000 has no duplicates", !big.err && new Set(big.parsed.rows.map((x) => x.ID)).size === big.parsed.returned, `returned=${big.parsed?.returned}`);
 const wide = await call("insyte_query", { dataset: "JobLines", limit: 1000 });
 check("wide rows trimmed with a note", !wide.err && wide.parsed.returned < 1000 && /Cut to/.test(wide.parsed.note ?? ""), `returned=${wide.parsed?.returned}`);
-// The cap is 80,000 characters of the exact text returned; trimming packs close to it.
-check("trimmed output fits the cap and packs near it", wide.body.length <= 80_000 && wide.body.length > 70_000, `chars=${wide.body.length}`);
+// The cap is 60,000 characters of the exact text returned; trimming packs close to it.
+check("trimmed output fits the cap and packs near it", wide.body.length <= 60_000 && wide.body.length > 50_000, `chars=${wide.body.length}`);
 const narrow = await call("insyte_query", { dataset: "Jobs", select: "ID,Reference,Stage,Status,JobDate,JobType", limit: 1000 });
-check("narrow rows trimmed by fit, not halved", !narrow.err && narrow.body.length <= 80_000 && (narrow.parsed.returned === 1000 || narrow.body.length > 70_000), `returned=${narrow.parsed?.returned} chars=${narrow.body.length}`);
+check("narrow rows trimmed by fit, not halved", !narrow.err && narrow.body.length <= 60_000 && (narrow.parsed.returned === 1000 || narrow.body.length > 50_000), `returned=${narrow.parsed?.returned} chars=${narrow.body.length}`);
 
 // Query errors
 r = await call("insyte_query", { dataset: "Jobs", filter: "Nope eq 1", limit: 1 });

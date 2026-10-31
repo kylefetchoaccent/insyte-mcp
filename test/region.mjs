@@ -31,6 +31,8 @@ function mock(hosts) {
     if (u.pathname.startsWith("/openapi")) return new Response(JSON.stringify({ paths: {} }), { status: 200 });
     if (auth !== `X-ApiKey ${KEY}`) return new Response("", { status: 401 });
     if (mode === "reject") return new Response("", { status: 401 });
+    if (mode === "forbid") return new Response("", { status: 403 });
+    if (mode === "nocontent") return new Response(null, { status: 204 });
     if (mode === "error500") return new Response('{"error":{"message":"boom"}}', { status: 500 });
     return new Response(JSON.stringify({ value: [{ ID: 1 }] }), { status: 200 });
   };
@@ -61,7 +63,22 @@ check("AU probe 500 is not acceptance; US still found", c.base === US);
 mock({ [AU]: "error500", [US]: "reject" });
 c = new InsyteClient("auto", KEY, "auto");
 err = await c.init().then(() => undefined, (e) => e);
-check("probe 500 plus a rejection: init fails, no false warning", err && /boom/.test(err.message), err?.message);
+check("probe 500 plus a rejection: init fails, no false warning", err && /returned 500/.test(err.message) && !/Passing select/.test(err.message), err?.message);
+
+mock({ [AU]: "forbid", [US]: "accept" });
+c = new InsyteClient("auto", KEY, "auto");
+await c.init();
+check("403 counts as a rejection; next host tried", c.base === US && !c.authWarning, c.base);
+
+mock({ [AU]: "nocontent", [US]: "accept" });
+c = new InsyteClient("auto", KEY, "auto");
+await c.init();
+check("any 2xx accepts the key, even an empty 204", c.base === AU && !c.authWarning, c.base);
+
+mock({ [US]: "reject" });
+c = new InsyteClient("https://api.myinsyte.com/v2", KEY, "auto");
+await c.init();
+check("explicit endpoint rejected: warning names the other region", /wrong region \(the other Insyte endpoint is https:\/\/api\.myinsyte\.com\.au\)/.test(c.authWarning ?? ""), c.authWarning);
 
 mock({ [AU]: "reject", [US]: "reject" });
 c = new InsyteClient("auto", "wrong-key", "auto");

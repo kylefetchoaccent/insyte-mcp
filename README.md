@@ -113,7 +113,7 @@ One command in the terminal.
 
 <p align="center"><img src="docs/images/desktop.png" alt="Claude Desktop install: 1 download the .mcpb file, 2 double-click it or drag it onto Claude, 3 click Install and paste your key, 4 start a new chat and ask" width="880"></p>
 
-1. Download **[`insyte-0.2.1.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.2.1.mcpb)** (click the link; it downloads straight away).
+1. Download **[`insyte-0.2.2.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.2.2.mcpb)** (click the link; it downloads straight away).
 2. **Double-click** the file. If that doesn't open Claude, drag the file onto the Claude Desktop window.
 3. Claude shows the Insyte extension. Click **Install**.
 4. Paste your API key into **Insyte API key**. Leave **API endpoint** and **API version** as they are.
@@ -151,7 +151,7 @@ accepts your key. If Claude reports that Insyte rejected a key you know is right
 
 ### 2B · Claude Code
 
-1. Download **[`insyte-mcp-0.2.1.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.2.1.zip)**
+1. Download **[`insyte-mcp-0.2.2.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.2.2.zip)**
    and unzip it somewhere permanent, for example your home folder. You should end up with
    `insyte-mcp/server/index.mjs`.
 2. Add your Insyte system. Pick a short name for it (`main` is fine) and paste your key when asked.

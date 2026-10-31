@@ -104,7 +104,7 @@ export class InsyteClient {
         if (probe === "rejected") rejected.push(host);
         else failed.push(`${new URL(host).host}: ${probe}`);
       } catch (err) {
-        failed.push(`${new URL(host).host}: ${(err as Error).message}`);
+        failed.push(`${new URL(host).host}: ${err instanceof InsyteError && err.status ? `returned ${err.status}` : (err as Error).message}`);
       }
     }
     // A host we could not check might be the right region. Fail now so the next call
@@ -141,11 +141,13 @@ export class InsyteClient {
   private async probeKey(): Promise<"accepted" | "rejected" | string> {
     const set = this.dataSets().find((s) => s.key.length === 1) ?? this.dataSets()[0];
     try {
-      await this.json(`${this.base}/${this.version}/${set.name}?$top=1&$select=${set.key.join(",")}`);
+      // Any 2xx accepts the key; the body doesn't matter here.
+      await this.fetch(`${this.base}/${this.version}/${set.name}?$top=1&$select=${set.key.join(",")}`, "application/json", true);
       return "accepted";
     } catch (err) {
       if (err instanceof InsyteError && (err.status === 401 || err.status === 403)) return "rejected";
-      return (err as Error).message;
+      // The data-query hints in the message don't apply to a connection check.
+      return err instanceof InsyteError && err.status ? `returned ${err.status}` : (err as Error).message;
     }
   }
 

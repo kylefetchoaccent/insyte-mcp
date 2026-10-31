@@ -1,6 +1,6 @@
 # Insyte MCP: technical design
 
-Version 0.2.1. For setup steps, see the [README](../README.md). This document covers how the server
+Version 0.2.2. For setup steps, see the [README](../README.md). This document covers how the server
 works, the contract its tools keep, how it stores credentials, and the plan for a hosted connector
 that people add from claude.ai's connector settings.
 
@@ -84,9 +84,13 @@ Rules every implementation keeps:
   which client a row came from.
 - **Read-only.** Every tool carries `readOnlyHint: true`. No tool writes to Insyte.
 - **Bounded output.** Results stop at 1,000 rows. The server emits compact JSON and keeps the most
-  rows whose complete output fits in 80,000 characters, measured on the exact text returned, with
-  `hasMore`, `nextSkip` and a note saying what was cut. The cap sits under Claude Code's default MCP
-  output limit (25,000 tokens), so the client never cuts rows that `nextSkip` counted as seen.
+  rows whose complete output fits in 60,000 characters, measured on the exact text returned, with
+  `hasMore`, `nextSkip` and a note saying what was cut. A single record over the cap on its own (a
+  long text field, or a big expanded collection) is refused with a hint to narrow `select`, in
+  `insyte_get_record` as well as the list tools. The cap aims to stay under Claude Code's default
+  MCP output limit (25,000 tokens), so the client never cuts rows that `nextSkip` counted as seen.
+  **[UNVERIFIED]** that 60,000 characters fits: it assumes at least 2.4 characters per token for
+  JSON full of IDs and dates, and nobody has measured it with a tokenizer.
 - **Honest gaps.** Fields Insyte can't read come back listed in `skipped`, not silently dropped.
 
 ## Named systems
@@ -167,9 +171,9 @@ a .NET API over SQL Server **[INFERRED]**, so these belong in an Accent bug tick
 | Test | What it proves | Needs |
 |---|---|---|
 | `npm run test:live` (`test/live.mjs`) | Every data set with and without `select`, every related list, codes, paging, the output cap, error messages, and that no output contains the key. 148 checks on the US tenant; prints SKIP where a tenant lacks the data for a check. Prints IDs and counts only. | `INSYTE_API_KEY` |
-| `npm run test:systems` (`test/systems.mjs`) | `add`/`list`/`test`/`remove`, the credential store round trip, system choice and tagging over MCP, a natural extension name, refusal to start with no systems, that removed keys are really gone, and that no output contains the key. 21 checks. Uses an isolated store service and registry, and cleans up even when a check throws. | `INSYTE_API_KEY` |
-| `npm run test:region` (`test/region.mjs`) | Region detection with hosts up, down, rejecting or failing; that the key goes only on authentication probes; https enforcement. 13 checks against a mocked `fetch`. | Nothing |
-| `node test/paging.mjs <metadata.xml>` | Paging, `nextLink` handling, annotation stripping, and refusing a foreign `nextLink`, against a local mock. 5 checks. | A saved `$metadata` file |
+| `npm run test:systems` (`test/systems.mjs`) | `add`/`list`/`test`/`remove`, the credential store round trip, system choice and tagging over MCP, a natural extension name, refusal to start with no systems, that removed keys are really gone, and that no output contains the key. 21 checks. Scans the server's stderr as well as tool output. Uses an isolated store service and registry, and cleans up even when a check throws or the run is stopped with Ctrl+C. | `INSYTE_API_KEY` |
+| `npm run test:region` (`test/region.mjs`) | Region detection with hosts up, down, rejecting or failing; that the key goes only on authentication probes; 403 and empty 204 probes, the single-endpoint warning, https enforcement. 16 checks against a mocked `fetch`. | Nothing |
+| `node test/paging.mjs <metadata.xml>` | Paging, `nextLink` handling, annotation stripping, refusing an oversized single record, and refusing a foreign `nextLink`, against a local mock. 7 checks. | A saved `$metadata` file |
 | `npm run smoke` | Prints each tool's output for a human to read | `INSYTE_API_KEY` |
 
 Not covered yet: the macOS and Linux credential stores, installing the `.mcpb` in Claude Desktop, an
