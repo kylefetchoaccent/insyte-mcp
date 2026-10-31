@@ -56,8 +56,13 @@ export async function loadSystems(env: NodeJS.ProcessEnv): Promise<{ systems: Sy
   const systems: SystemConfig[] = [];
   const envKey = env.INSYTE_API_KEY?.trim();
   if (envKey) {
+    // People type natural names in the extension's settings ("Acme Blinds"); make them usable
+    // instead of refusing to start.
+    const typed = env.INSYTE_SYSTEM_NAME?.trim() || "main";
+    const name = typed.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[-_]+|-+$/g, "").slice(0, 40) || "main";
+    if (name !== typed) warnings.push(`System name "${typed}" is used as "${name}".`);
     systems.push({
-      name: checkName(env.INSYTE_SYSTEM_NAME?.trim() || "main"),
+      name,
       base: env.INSYTE_API_BASE?.trim() || "auto",
       apiKey: envKey,
       source: "environment",

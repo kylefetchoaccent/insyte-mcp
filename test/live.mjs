@@ -9,9 +9,11 @@ const entry = process.argv[2] ?? "dist/index.js";
 const client = new Client({ name: "live", version: "0" });
 await client.connect(new StdioClientTransport({ command: "node", args: [entry], env: process.env, stderr: "inherit" }));
 
+const outputs = [];
 const call = async (name, args) => {
   const r = await client.callTool({ name, arguments: args });
   const body = r.content.map((c) => c.text).join("\n");
+  outputs.push(body);
   let parsed;
   try { parsed = JSON.parse(body); } catch {}
   return { err: !!r.isError, body, parsed };
@@ -71,13 +73,15 @@ if (sj !== undefined) {
   check(`SupplyJobs(${sj})->SupplyJobLines matches filter`, !viaRel.err && ids(viaRel) === ids(viaFilter) && ids(viaRel) !== "", `${ids(viaRel) || short(viaRel)} vs ${ids(viaFilter)}`);
   const paged = await call("insyte_get_related", { dataset: "SupplyJobs", id: sj, relation: "SupplyJobLines", select: "ID", orderby: "ID desc", limit: 1 });
   check("related fallback honours limit/orderby", !paged.err && paged.parsed.returned === 1, short(paged));
-}
+  const expanded = await call("insyte_query", { dataset: "SupplyJobs", select: "ID", expand: "SupplyJobLines", filter: `ID eq ${sj}`, limit: 1 });
+  check("expand of unreadable set: works or explains nested $select", !expanded.err || /nested \$select/.test(expanded.body), short(expanded));
+} else console.log("SKIP  SupplyJobs relation checks  (no SupplyJobLines records)");
 const noLead = await call("insyte_query", { dataset: "Opportunities", select: "ID", filter: "ExternalLeadID eq null", limit: 1 });
 const opp = noLead.parsed?.rows?.[0]?.ID;
 if (opp !== undefined) {
   const r = await call("insyte_get_related", { dataset: "Opportunities", id: opp, relation: "ExternalLead", select: "ID" });
   check(`Opportunities(${opp})->ExternalLead empty, not an error`, !r.err && r.parsed.returned === 0, short(r));
-}
+} else console.log("SKIP  empty ExternalLead check  (every opportunity has a lead)");
 const lineFields = /# JobLines[\s\S]*?## Fields\n([\s\S]*?)\n\n/.exec(described.JobLines ?? "")?.[1];
 const jobFields = new Set([...(described.Jobs ?? "").matchAll(/^- (\w+) \(/gm)].map((m) => m[1]));
 const lineOnly = [...(lineFields ?? "").matchAll(/^- (\w+) \(/gm)].map((m) => m[1]).find((f) => !jobFields.has(f));
@@ -88,7 +92,7 @@ if (lineOnly && jobId !== undefined) {
   check(`related select uses child fields (${lineOnly})`, !r.err, short(r));
   const bad = await call("insyte_get_related", { dataset: "Jobs", id: jobId, relation: "JobLines", select: "ID,Reference", limit: 1 });
   check("related select rejects parent-only field locally", bad.err && /JobLines has no field "Reference"/.test(bad.body), short(bad));
-}
+} else console.log("SKIP  related select checks  (no JobLines records)");
 
 // get_record
 const job = (await call("insyte_query", { dataset: "Jobs", select: "ID", limit: 1 })).parsed?.rows?.[0]?.ID;
@@ -109,12 +113,18 @@ const big = await call("insyte_query", { dataset: "Jobs", select: "ID", limit: 1
 check("limit 1000 has no duplicates", !big.err && new Set(big.parsed.rows.map((x) => x.ID)).size === big.parsed.returned, `returned=${big.parsed?.returned}`);
 const wide = await call("insyte_query", { dataset: "JobLines", limit: 1000 });
 check("wide rows trimmed with a note", !wide.err && wide.parsed.returned < 1000 && /Cut to/.test(wide.parsed.note ?? ""), `returned=${wide.parsed?.returned}`);
+// The cap is 80,000 characters of the exact text returned; trimming packs close to it.
+check("trimmed output fits the cap and packs near it", wide.body.length <= 80_000 && wide.body.length > 70_000, `chars=${wide.body.length}`);
+const narrow = await call("insyte_query", { dataset: "Jobs", select: "ID,Reference,Stage,Status,JobDate,JobType", limit: 1000 });
+check("narrow rows trimmed by fit, not halved", !narrow.err && narrow.body.length <= 80_000 && (narrow.parsed.returned === 1000 || narrow.body.length > 70_000), `returned=${narrow.parsed?.returned} chars=${narrow.body.length}`);
 
 // Query errors
 r = await call("insyte_query", { dataset: "Jobs", filter: "Nope eq 1", limit: 1 });
 check("bad filter -> 400 with hint", r.err && /400/.test(r.body) && /insyte_describe_dataset/.test(r.body), short(r));
 r = await call("insyte_query", { dataset: "Jobs", select: "ID,NotAField" });
 check("bad select -> local error", r.err && /no field "NotAField"/.test(r.body), short(r));
+const apiKey = process.env.INSYTE_API_KEY?.trim();
+check("key never appears in any tool output", !apiKey || !outputs.some((o) => o.includes(apiKey)), `${outputs.length} outputs scanned`);
 
 console.log(`\n${fails.length ? `${fails.length} FAILED:\n  ${fails.join("\n  ")}` : "all checks passed"}`);
 await client.close();

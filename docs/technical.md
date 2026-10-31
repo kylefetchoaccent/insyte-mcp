@@ -1,6 +1,6 @@
 # Insyte MCP: technical design
 
-Version 0.2.0. For setup steps, see the [README](../README.md). This document covers how the server
+Version 0.2.1. For setup steps, see the [README](../README.md). This document covers how the server
 works, the contract its tools keep, how it stores credentials, and the plan for a hosted connector
 that people add from claude.ai's connector settings.
 
@@ -31,18 +31,30 @@ The server speaks MCP over stdio. Claude Desktop or Claude Code starts it as a c
 | `src/cli.ts` | The `add`, `list`, `test` and `remove` commands. |
 
 **Startup.** The server loads the system list, then reads every registered key from the credential
-store in one call. On Windows that call runs a PowerShell script, which takes a few seconds the first
-time while PowerShell compiles its helper. The server then connects MCP and warms up the first system
+store in one call. On Windows that call runs a PowerShell script, which took under half a second in
+review testing. The server then connects MCP and warms up the first system
 in the background. Other systems connect on first use, so a support person with dozens of systems
 never sends dozens of `$metadata` requests at once. Accent's Acceptable Use Policy (4.4) rules out
 traffic patterns that could disrupt Insyte.
 
-**Connecting a system.** `InsyteClient.init()` reads `/{version}/$metadata` and the OpenAPI
-document, which Insyte serves without a key, then makes one authenticated request (`$top=1`) to check
-the key. With the endpoint set to `auto`, it tries each known regional host and keeps the first that
-accepts the key. Only that authenticated request can tell the regions apart, because `$metadata`
-answers on every host. **[VERIFIED]** on the US host; **[UNVERIFIED]** on the Australian host
-(no AU key available during testing).
+**Connecting a system.** For each candidate host, `InsyteClient.init()`:
+
+1. Checks for API v3 (`/v3/$metadata`). Only a 404 means "use v2"; any other failure counts as the
+   host failing.
+2. Reads `/{version}/$metadata`, sending no key; Insyte serves it publicly.
+3. Makes one authenticated request (`$top=1`). This is the only request in `init` that carries the
+   key. A 2xx accepts the key, a 401 or 403 rejects it, and anything else counts as the host failing.
+4. For the accepting host only, reads the OpenAPI document (close to 1 MB) for related-list routes.
+
+With the endpoint set to `auto`, the candidates are each known regional host, tried in order until
+one accepts the key. If a host fails (network, 5xx), `init` throws instead of settling on a host that
+rejected the key, and the next tool call tries again. Only when every host rejects the key does the
+server keep the first one, so the metadata tools still work, and report the rejection.
+`test/region.mjs` covers each of these paths against a mocked `fetch`. **[VERIFIED]** live on the US
+host; **[UNVERIFIED]** live on the Australian host (no AU key available during testing).
+
+An explicit endpoint must be https; plain http is refused except for localhost, which the paging
+test's mock server uses. An endpoint typed without a scheme gets `https://`.
 
 **Metadata-driven tools.** The tools carry no per-entity code. Data sets, fields, keys, navigation
 properties and descriptions all come from `$metadata`; related-list routes come from the OpenAPI
@@ -71,8 +83,10 @@ Rules every implementation keeps:
 - **Tagging.** With several systems, every data result carries `system`, so Claude can't mix up
   which client a row came from.
 - **Read-only.** Every tool carries `readOnlyHint: true`. No tool writes to Insyte.
-- **Bounded output.** Results stop at 1,000 rows and shrink to about 120,000 characters, with
-  `hasMore`, `nextSkip` and a note saying what was cut.
+- **Bounded output.** Results stop at 1,000 rows. The server emits compact JSON and keeps the most
+  rows whose complete output fits in 80,000 characters, measured on the exact text returned, with
+  `hasMore`, `nextSkip` and a note saying what was cut. The cap sits under Claude Code's default MCP
+  output limit (25,000 tokens), so the client never cuts rows that `nextSkip` counted as seen.
 - **Honest gaps.** Fields Insyte can't read come back listed in `skipped`, not silently dropped.
 
 ## Named systems
@@ -117,8 +131,11 @@ How the local design meets Accent's Password Policy v1.0 and Acceptable Use Poli
 **Process-level details.** Keys reach the credential store over stdin, never as command-line
 arguments, because other users on a shared machine can read command lines in the process list. On
 Windows the PowerShell helper writes keys back to the server over a pipe, and nothing touches disk.
-The server sends each key only to the host it belongs to, and refuses to follow a paging link to
-any other host. **[VERIFIED]** on Windows. **[UNVERIFIED]** on macOS (the `security -i` path) and
+The key travels only over https (plain http only to localhost), and never on `$metadata` or OpenAPI
+requests. In `auto` mode each candidate host's single authentication probe carries it, in order,
+until one host accepts; after that it goes only to that host. The server refuses to follow a paging
+link to any other host. Tool output never contains the key: `test/live.mjs` and `test/systems.mjs`
+scan every output for it. **[VERIFIED]** on Windows. **[UNVERIFIED]** on macOS (the `security -i` path) and
 Linux (`secret-tool`): written, not run.
 
 **Residual risks.**
@@ -139,10 +156,9 @@ a .NET API over SQL Server **[INFERRED]**, so these belong in an Accent bug tick
 
 | Fault | Seen on | Server behaviour |
 |---|---|---|
-| A relation route returns 200 with a body cut off mid-JSON | `SupplyJobs(id)/SupplyJobLines`, `JobLines(id)/JobLineService`, `Opportunities(id)/ExternalLead` | Fetches the same data by expanding the parent: `Parent(id)?$expand=Rel(...)` |
-| A missing single related record returns 404, not an empty result | `JobLines(id)/JobLineService`, `Opportunities(id)/ExternalLead` | Same expand fallback; returns zero rows |
-| The API maps columns the tenant's database lacks; any request reading them fails with `Invalid column name` | `SupplyJobLines.ProductBaseUnit`, `ProductBaseUnitFormat` | When a request names no fields, finds the bad columns once (a full single-record read names them), leaves them out, and lists them in `skipped` |
-| List queries hide the column error behind "Exception has been thrown by the target of an invocation" | `SupplyJobLines` list | Covered by the row above |
+| The API maps columns the tenant's database lacks; any request reading them fails | `SupplyJobLines.ProductBaseUnit`, `ProductBaseUnitFormat` | When a request names no fields, finds the bad columns once (a full single-record read names them), leaves them out, and lists them in `skipped` |
+| That column fault shows up three ways: a 500 naming `Invalid column name` (single record), a 500 saying "Exception has been thrown by the target of an invocation" (lists, expands), or a 200 cut off mid-JSON (relation routes) | `SupplyJobLines` by every route; `SupplyJobs(id)/SupplyJobLines` truncated | All three trigger the column search above. An `$expand` of the affected set still fails; the error tells Claude to give that expand a nested `$select` |
+| A missing single related record returns 404, not an empty result | `JobLines(id)/JobLineService`, `Opportunities(id)/ExternalLead` (one call also came back truncated) | Fetches it by expanding the parent, `Parent(id)?$expand=Rel`, and returns zero rows |
 | Status, Stage and Type hold codes (`stage_job_quote`), while descriptions say "quote, order or lost" | Every data set with such fields | Instructions say so; `insyte_describe_dataset` lists the codes it finds |
 | `$metadata` answers without a key on every regional host | Both hosts | Region detection uses an authenticated request |
 
@@ -150,9 +166,10 @@ a .NET API over SQL Server **[INFERRED]**, so these belong in an Accent bug tick
 
 | Test | What it proves | Needs |
 |---|---|---|
-| `npm run test:live` (`test/live.mjs`) | Every data set with and without `select`, every related list, codes, paging, caps, error messages. 144 checks on the US tenant. Prints IDs and counts only. | `INSYTE_API_KEY` |
-| `npm run test:systems` (`test/systems.mjs`) | `add`/`list`/`test`/`remove`, the credential store round trip, system choice and tagging over MCP, refusal to start with no systems, and that removed keys are really gone. 20 checks. Uses an isolated store service and registry, and cleans up. | `INSYTE_API_KEY` |
-| `node test/paging.mjs <metadata.xml>` | Paging, `nextLink` handling, and refusing a foreign `nextLink`, against a local mock | A saved `$metadata` file |
+| `npm run test:live` (`test/live.mjs`) | Every data set with and without `select`, every related list, codes, paging, the output cap, error messages, and that no output contains the key. 148 checks on the US tenant; prints SKIP where a tenant lacks the data for a check. Prints IDs and counts only. | `INSYTE_API_KEY` |
+| `npm run test:systems` (`test/systems.mjs`) | `add`/`list`/`test`/`remove`, the credential store round trip, system choice and tagging over MCP, a natural extension name, refusal to start with no systems, that removed keys are really gone, and that no output contains the key. 21 checks. Uses an isolated store service and registry, and cleans up even when a check throws. | `INSYTE_API_KEY` |
+| `npm run test:region` (`test/region.mjs`) | Region detection with hosts up, down, rejecting or failing; that the key goes only on authentication probes; https enforcement. 13 checks against a mocked `fetch`. | Nothing |
+| `node test/paging.mjs <metadata.xml>` | Paging, `nextLink` handling, annotation stripping, and refusing a foreign `nextLink`, against a local mock. 5 checks. | A saved `$metadata` file |
 | `npm run smoke` | Prints each tool's output for a human to read | `INSYTE_API_KEY` |
 
 Not covered yet: the macOS and Linux credential stores, installing the `.mcpb` in Claude Desktop, an

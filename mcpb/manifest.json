@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "insyte",
   "display_name": "Insyte",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read-only access to one or more Insyte Web tenants: jobs, job lines, contacts, companies, opportunities, invoices, payments and more.",
   "long_description": "Lets Claude query one or more Insyte Web tenants through the Insyte API (OData). It reads the API's metadata at startup, so every data set the tenant exposes is available with Insyte's own field descriptions. Read-only. Needs a READ API key from Settings > Integration > Api Integration (Professional edition, API licensed). Claude sees exactly what the key's Rep can see. To add more Insyte systems, run the add command from the insyte-mcp download; the extension picks them up from the OS credential store.",
   "author": {
@@ -61,7 +61,7 @@
     "system_name": {
       "type": "string",
       "title": "Name for this system",
-      "description": "What you call this Insyte system when you ask Claude, e.g. acme. Only matters once you add more than one.",
+      "description": "What you call this Insyte system when you ask Claude, e.g. acme. Letters, digits, - and _; anything else becomes -. Only matters once you add more than one.",
       "default": "main",
       "required": false
     },

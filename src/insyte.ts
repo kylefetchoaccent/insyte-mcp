@@ -75,62 +75,78 @@ export class InsyteClient {
   private codes = new Map<string, Map<string, string[]>>();
   private unreadable = new Map<string, Set<string>>();
   private readonly candidates: string[];
+  private readonly baseError?: string;
 
   constructor(base: string, private readonly apiKey: string, private readonly requestedVersion: string) {
     // People paste the endpoint from the Api Integration page, which may include /v2 or /v3.
-    const explicit = base.trim().toLowerCase() === "auto" ? "" : base.trim();
+    let explicit = base.trim().toLowerCase() === "auto" ? "" : base.trim();
+    if (explicit && !/^[a-z]+:\/\//i.test(explicit)) explicit = `https://${explicit}`;
     this.candidates = explicit ? [explicit.replace(/\/+$/, "").replace(/\/v\d+$/i, "")] : KNOWN_HOSTS;
+    // The key must never travel unencrypted; plain http is only for a local test server.
+    if (explicit && !/^https:\/\//i.test(explicit) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(explicit)) {
+      this.baseError = `The endpoint "${explicit}" is not https. Use the https:// API Endpoint shown on the Api Integration page, or auto.`;
+    }
   }
 
   async init(): Promise<void> {
+    if (this.baseError) throw new InsyteError(this.baseError);
     const rejected: string[] = [];
-    let fallback: string | undefined;
-    let lastError: unknown;
+    const failed: string[] = [];
     for (const host of this.candidates) {
       this.base = host;
       try {
-        await this.load();
+        await this.loadMetadata();
+        const probe = await this.probeKey();
+        if (probe === "accepted") {
+          await this.attachRelated();
+          return;
+        }
+        if (probe === "rejected") rejected.push(host);
+        else failed.push(`${new URL(host).host}: ${probe}`);
       } catch (err) {
-        lastError = err;
-        continue;
+        failed.push(`${new URL(host).host}: ${(err as Error).message}`);
       }
-      fallback ??= host;
-      if (await this.keyAccepted()) return;
-      rejected.push(new URL(host).host);
     }
-    if (!fallback) throw lastError;
-    if (this.base !== fallback) {
-      this.base = fallback;
-      await this.load();
+    // A host we could not check might be the right region. Fail now so the next call
+    // tries again, rather than pinning a host that rejects the key all session.
+    if (failed.length) throw new InsyteError(`Could not check the API key with Insyte. ${failed.join(" | ")}`);
+    // Every host rejected the key. Keep the first so the metadata tools still work.
+    if (this.base !== rejected[0]) {
+      this.base = rejected[0];
+      await this.loadMetadata();
     }
+    await this.attachRelated();
     this.authWarning =
-      `${rejected.join(" and ")} rejected the API key. The key may be wrong, deleted, or belong to a user without an API licence` +
+      `${rejected.map((h) => new URL(h).host).join(" and ")} rejected the API key. The key may be wrong, deleted, or belong to a user without an API licence` +
       (this.candidates.length === 1 ? `, or the endpoint setting may point at the wrong region (${otherHosts(this.base)}).` : ".");
   }
 
-  private async load(): Promise<void> {
+  private async loadMetadata(): Promise<void> {
     this.sets.clear();
     this.codes.clear();
     this.unreadable.clear();
     this.version = this.requestedVersion === "auto" ? await this.detectVersion() : this.requestedVersion;
     const xml = await this.text(`/${this.version}/$metadata`);
-    const related = await this.loadRelated();
-    for (const set of parseMetadata(xml)) {
-      set.related = related.get(set.name.toLowerCase()) ?? [];
-      this.sets.set(set.name.toLowerCase(), set);
-    }
+    for (const set of parseMetadata(xml)) this.sets.set(set.name.toLowerCase(), set);
     if (this.sets.size === 0) throw new InsyteError(`No data sets found in ${this.base}/${this.version}/$metadata`);
   }
 
-  // Only 401/403 counts as a rejection; any other failure is left for the tools to report.
-  private async keyAccepted(): Promise<boolean> {
+  // Loaded only for the host that accepted the key: the OpenAPI document is close to 1 MB.
+  private async attachRelated(): Promise<void> {
+    const related = await this.loadRelated();
+    for (const set of this.sets.values()) set.related = related.get(set.name.toLowerCase()) ?? [];
+  }
+
+  // The only request in init that carries the key. Only a 2xx counts as accepted.
+  private async probeKey(): Promise<"accepted" | "rejected" | string> {
     const set = this.dataSets().find((s) => s.key.length === 1) ?? this.dataSets()[0];
     try {
       await this.json(`${this.base}/${this.version}/${set.name}?$top=1&$select=${set.key.join(",")}`);
+      return "accepted";
     } catch (err) {
-      if (err instanceof InsyteError && (err.status === 401 || err.status === 403)) return false;
+      if (err instanceof InsyteError && (err.status === 401 || err.status === 403)) return "rejected";
+      return (err as Error).message;
     }
-    return true;
   }
 
   // Code-valued string fields of a data set and the codes seen in its most recent records.
@@ -276,7 +292,8 @@ export class InsyteClient {
         const result = await run(fields);
         return skipped.length ? { ...result, skipped } : result;
       } catch (err) {
-        if (attempt > 0 || !(err instanceof InsyteError) || err.status !== 500) throw err;
+        // Unreadable columns show up as a 500, or as a 200 cut off mid-stream.
+        if (attempt > 0 || !(err instanceof InsyteError) || !(err.status === 500 || err.incomplete)) throw err;
         let bad = unreadableColumns(err, target);
         if (!bad.length) bad = await this.findUnreadable(target);
         if (!bad.length) throw err;
@@ -329,8 +346,10 @@ export class InsyteClient {
     try {
       await this.text("/v3/$metadata");
       return "v3";
-    } catch {
-      return "v2";
+    } catch (err) {
+      // Only "no v3 here" means v2; anything else (network, 5xx) must not silently pick a version.
+      if (err instanceof InsyteError && err.status === 404) return "v2";
+      throw err;
     }
   }
 
@@ -341,7 +360,7 @@ export class InsyteClient {
     let paths: Record<string, unknown> = {};
     for (const doc of [`/openapi.${this.version}.json`, "/openapi.json"]) {
       try {
-        paths = ((await this.json(`${this.base}${doc}`)) as { paths?: Record<string, unknown> }).paths ?? {};
+        paths = ((await this.json(`${this.base}${doc}`, false)) as { paths?: Record<string, unknown> }).paths ?? {};
         break;
       } catch {
         // try the next document
@@ -365,13 +384,14 @@ export class InsyteClient {
     return next.toString();
   }
 
+  // Only $metadata goes through here, and Insyte serves it without a key, so none is sent.
   private async text(path: string): Promise<string> {
-    const res = await this.fetch(`${this.base}${path}`, "application/xml");
+    const res = await this.fetch(`${this.base}${path}`, "application/xml", false);
     return res.text();
   }
 
-  private async json(url: string): Promise<unknown> {
-    const res = await this.fetch(url, "application/json");
+  private async json(url: string, auth = true): Promise<unknown> {
+    const res = await this.fetch(url, "application/json", auth);
     const body = await res.text();
     try {
       return JSON.parse(body);
@@ -384,18 +404,19 @@ export class InsyteClient {
     }
   }
 
-  private async fetch(url: string, accept: string): Promise<Response> {
+  private async fetch(url: string, accept: string, auth: boolean): Promise<Response> {
     let res: Response;
     try {
       res = await fetch(url, {
-        headers: { Authorization: `X-ApiKey ${this.apiKey}`, Accept: accept },
+        headers: auth ? { Authorization: `X-ApiKey ${this.apiKey}`, Accept: accept } : { Accept: accept },
         signal: AbortSignal.timeout(60_000),
       });
     } catch (err) {
       throw new InsyteError(`Could not reach ${new URL(url).host}: ${(err as Error).message}`);
     }
     if (res.ok) return res;
-    throw new InsyteError(explain(res.status, await res.text(), new URL(url).origin, this.candidates.length === 1), res.status);
+    const expanded = new URL(url).searchParams.has("$expand");
+    throw new InsyteError(explain(res.status, await res.text(), new URL(url).origin, this.candidates.length === 1, expanded), res.status);
   }
 }
 
@@ -404,7 +425,7 @@ function otherHosts(base: string): string {
   return others.length ? `the other Insyte endpoint is ${others.join(", ")}` : "check the API Endpoint on the Api Integration page";
 }
 
-function explain(status: number, body: string, origin: string, explicitBase: boolean): string {
+function explain(status: number, body: string, origin: string, explicitBase: boolean, expanded = false): string {
   let detail = body.slice(0, 500);
   try {
     const parsed = JSON.parse(body);
@@ -425,7 +446,10 @@ function explain(status: number, body: string, origin: string, explicitBase: boo
             : status >= 500
               ? " This is a server error inside Insyte. Passing select with only the fields you need sometimes avoids it."
               : "";
-  return `Insyte API returned ${status}${detail ? `: ${detail}` : "."}${hint}`;
+  // Expanding a data set with unreadable columns fails the whole request (seen: SupplyJobLines).
+  const expandHint =
+    status >= 500 && expanded ? " If expand pulls in a data set with fields Insyte cannot read, give that expand a nested $select, e.g. Lines($select=ID,Quantity)." : "";
+  return `Insyte API returned ${status}${detail ? `: ${detail}` : "."}${hint}${expandHint}`;
 }
 
 function unreadableColumns(err: unknown, set: DataSet): string[] {

@@ -113,7 +113,7 @@ One command in the terminal.
 
 <p align="center"><img src="docs/images/desktop.png" alt="Claude Desktop install: 1 download the .mcpb file, 2 double-click it or drag it onto Claude, 3 click Install and paste your key, 4 start a new chat and ask" width="880"></p>
 
-1. Download **[`insyte-0.2.0.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.2.0.mcpb)** (click the link; it downloads straight away).
+1. Download **[`insyte-0.2.1.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.2.1.mcpb)** (click the link; it downloads straight away).
 2. **Double-click** the file. If that doesn't open Claude, drag the file onto the Claude Desktop window.
 3. Claude shows the Insyte extension. Click **Install**.
 4. Paste your API key into **Insyte API key**. Leave **API endpoint** and **API version** as they are.
@@ -151,7 +151,7 @@ accepts your key. If Claude reports that Insyte rejected a key you know is right
 
 ### 2B · Claude Code
 
-1. Download **[`insyte-mcp-0.2.0.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.2.0.zip)**
+1. Download **[`insyte-mcp-0.2.1.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.2.1.zip)**
    and unzip it somewhere permanent, for example your home folder. You should end up with
    `insyte-mcp/server/index.mjs`.
 2. Add your Insyte system. Pick a short name for it (`main` is fine) and paste your key when asked.
@@ -234,7 +234,7 @@ Claude works in three moves, and you'll see them in the chat:
 
 | What you see | What it means | Fix |
 |---|---|---|
-| `Insyte API returned 401` or `403`, or `rejected INSYTE_API_KEY` | The key is wrong, deleted, or its user isn't licensed. If you changed **API endpoint**, it may point at the wrong region. | Copy the key again from Api Integration (Step 1.4) and reinstall, or create a new key. Set **API endpoint** back to `auto`, or paste the endpoint from your Api Integration page. |
+| `Insyte API returned 401` or `403`, or `rejected the API key` | The key is wrong, deleted, or its user isn't licensed. If you changed **API endpoint**, it may point at the wrong region. | Copy the key again from Api Integration (Step 1.4) and reinstall, or create a new key. Set **API endpoint** back to `auto`, or paste the endpoint from your Api Integration page. |
 | `Could not reach` followed by an Insyte address | No internet, or a firewall or proxy blocks the API | Check you're online. On a work network, ask IT to allow the API Endpoint shown on your Api Integration page. |
 | `Left out …: Insyte cannot read these fields on this system` | Your Insyte database lacks columns the API expects | You still get the rest of each record. Tell Accent Software support which fields it names. |
 | Claude says it has no Insyte tools | The chat was open before you installed | Start a **new** chat. If that doesn't help, quit Claude completely and reopen it. |
@@ -287,8 +287,8 @@ Ask "Which Insyte systems can you see?" to check what Claude has.
   the key's Rep so it only sees what the people using it should see.
 - **Keys stay on your computer, encrypted.** Claude Desktop keeps the extension's key in the
   system's secure storage, and the `add` command stores keys in Windows Credential Manager or the
-  macOS Keychain. No key is written to a settings file. The server only sends each key to the Insyte
-  address it belongs to.
+  macOS Keychain. No key is written to a settings file. Keys only travel to Insyte's own addresses,
+  over https.
 - **Lost laptop, or someone leaves?** Delete their key on the Api Integration page. It stops working
   within moments.
 
@@ -390,7 +390,7 @@ Design notes, the security model, and the plan for a hosted claude.ai connector 
 ```bash
 npm install
 npm run build      # TypeScript → dist/
-npm run package    # single-file bundle + release/insyte-<version>.mcpb (needs: npm i -g @anthropic-ai/mcpb)
+npm run package    # single-file bundle + release/insyte-<version>.mcpb (fetches @anthropic-ai/mcpb with npx)
 ```
 
 ```bash
@@ -398,15 +398,18 @@ INSYTE_API_KEY=... npm run smoke
 ```
 
 `test/smoke.mjs` drives the server over stdio the way Claude does and prints each tool's output.
-`node test/paging.mjs <metadata.xml>` runs it against a local mock API to check paging.
+`node test/paging.mjs <metadata.xml>` runs it against a local mock API and asserts paging.
+`npm run test:region` checks region detection and where the key is sent, against a mocked `fetch`;
+it needs no key or network.
 
 ```bash
 INSYTE_API_KEY=... npm run test:live
 ```
 
 `test/live.mjs` asserts against a live tenant: every data set with and without `select`, every
-related list, the codes in `insyte_describe_dataset`, paging, and error messages. It prints IDs and
-counts, never record contents, and exits 1 on any failure.
+related list, the codes in `insyte_describe_dataset`, paging, the output cap, error messages, and
+that no output contains the key. It prints IDs and counts, never record contents, and exits 1 on
+any failure.
 
 ```bash
 INSYTE_API_KEY=... npm run test:systems
