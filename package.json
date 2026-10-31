@@ -1,6 +1,6 @@
 {
   "name": "insyte-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "MCP server that lets Claude query an Insyte Web tenant through the Insyte API (read-only).",
   "type": "module",
   "bin": {
@@ -15,6 +15,7 @@
     "start": "node dist/index.js",
     "smoke": "node test/smoke.mjs",
     "test:live": "node test/live.mjs",
+    "test:systems": "node test/systems.mjs",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --minify-syntax --legal-comments=none --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\" --outfile=build/mcpb/server/index.mjs --log-level=warning",
     "package": "npm run bundle && cp mcpb/manifest.json build/mcpb/ && mcpb pack build/mcpb release/insyte-$npm_package_version.mcpb"
   },

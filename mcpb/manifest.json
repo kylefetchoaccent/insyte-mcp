@@ -2,29 +2,53 @@
   "manifest_version": "0.2",
   "name": "insyte",
   "display_name": "Insyte",
-  "version": "0.1.1",
-  "description": "Read-only access to an Insyte Web tenant: jobs, job lines, contacts, companies, opportunities, invoices, payments and more.",
-  "long_description": "Lets Claude query an Insyte Web tenant through the Insyte API (OData). It reads the API's metadata at startup, so every data set the tenant exposes is available with Insyte's own field descriptions. Read-only. Needs a READ API key from Settings > Integration > Api Integration (Professional edition, API licensed). Claude sees exactly what the key's Rep can see.",
-  "author": { "name": "Accent Software" },
+  "version": "0.2.0",
+  "description": "Read-only access to one or more Insyte Web tenants: jobs, job lines, contacts, companies, opportunities, invoices, payments and more.",
+  "long_description": "Lets Claude query one or more Insyte Web tenants through the Insyte API (OData). It reads the API's metadata at startup, so every data set the tenant exposes is available with Insyte's own field descriptions. Read-only. Needs a READ API key from Settings > Integration > Api Integration (Professional edition, API licensed). Claude sees exactly what the key's Rep can see. To add more Insyte systems, run the add command from the insyte-mcp download; the extension picks them up from the OS credential store.",
+  "author": {
+    "name": "Accent Software"
+  },
   "server": {
     "type": "node",
     "entry_point": "server/index.mjs",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/index.mjs"],
+      "args": [
+        "${__dirname}/server/index.mjs"
+      ],
       "env": {
         "INSYTE_API_KEY": "${user_config.api_key}",
         "INSYTE_API_BASE": "${user_config.api_base}",
-        "INSYTE_API_VERSION": "${user_config.api_version}"
+        "INSYTE_API_VERSION": "${user_config.api_version}",
+        "INSYTE_SYSTEM_NAME": "${user_config.system_name}"
       }
     }
   },
   "tools": [
-    { "name": "insyte_list_datasets", "description": "List every data set the Insyte API exposes" },
-    { "name": "insyte_describe_dataset", "description": "Fields, types and descriptions of one data set" },
-    { "name": "insyte_query", "description": "Query a data set with OData filter, select, orderby, expand and paging" },
-    { "name": "insyte_get_record", "description": "Fetch one record by ID" },
-    { "name": "insyte_get_related", "description": "Follow a related list from one record, e.g. a job's lines" }
+    {
+      "name": "insyte_list_systems",
+      "description": "List the Insyte systems set up for this user"
+    },
+    {
+      "name": "insyte_list_datasets",
+      "description": "List every data set the Insyte API exposes"
+    },
+    {
+      "name": "insyte_describe_dataset",
+      "description": "Fields, types and descriptions of one data set"
+    },
+    {
+      "name": "insyte_query",
+      "description": "Query a data set with OData filter, select, orderby, expand and paging"
+    },
+    {
+      "name": "insyte_get_record",
+      "description": "Fetch one record by ID"
+    },
+    {
+      "name": "insyte_get_related",
+      "description": "Follow a related list from one record, e.g. a job's lines"
+    }
   ],
   "user_config": {
     "api_key": {
@@ -33,6 +57,13 @@
       "description": "READ key from Insyte: your name > Settings > Integration > Api Integration > New.",
       "sensitive": true,
       "required": true
+    },
+    "system_name": {
+      "type": "string",
+      "title": "Name for this system",
+      "description": "What you call this Insyte system when you ask Claude, e.g. acme. Only matters once you add more than one.",
+      "default": "main",
+      "required": false
     },
     "api_base": {
       "type": "string",
@@ -49,6 +80,10 @@
       "required": false
     }
   },
-  "compatibility": { "runtimes": { "node": ">=20.0.0" } },
+  "compatibility": {
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  },
   "license": "UNLICENSED"
 }

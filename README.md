@@ -113,7 +113,7 @@ One command in the terminal.
 
 <p align="center"><img src="docs/images/desktop.png" alt="Claude Desktop install: 1 download the .mcpb file, 2 double-click it or drag it onto Claude, 3 click Install and paste your key, 4 start a new chat and ask" width="880"></p>
 
-1. Download **[`insyte-0.1.1.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.1.1.mcpb)** (click the link; it downloads straight away).
+1. Download **[`insyte-0.2.0.mcpb`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-0.2.0.mcpb)** (click the link; it downloads straight away).
 2. **Double-click** the file. If that doesn't open Claude, drag the file onto the Claude Desktop window.
 3. Claude shows the Insyte extension. Click **Install**.
 4. Paste your API key into **Insyte API key**. Leave **API endpoint** and **API version** as they are.
@@ -151,24 +151,40 @@ accepts your key. If Claude reports that Insyte rejected a key you know is right
 
 ### 2B · Claude Code
 
-1. Download **[`insyte-mcp-0.1.1.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.1.1.zip)**
+1. Download **[`insyte-mcp-0.2.0.zip`](https://github.com/kylefetchoaccent/insyte-mcp/raw/main/downloads/insyte-mcp-0.2.0.zip)**
    and unzip it somewhere permanent, for example your home folder. You should end up with
    `insyte-mcp/server/index.mjs`.
-2. In a terminal, run the command for your system with your own key in place of `your-api-key`:
+2. Add your Insyte system. Pick a short name for it (`main` is fine) and paste your key when asked.
+   The key doesn't show as you paste it. The command checks the key with Insyte, then stores it in
+   your computer's credential store (Windows Credential Manager or the macOS Keychain), not in a file.
 
 **Mac / Linux**
 
 ```bash
-claude mcp add insyte --scope user -e INSYTE_API_KEY=your-api-key -- node ~/insyte-mcp/server/index.mjs
+node ~/insyte-mcp/server/index.mjs add main
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-claude mcp add insyte --scope user -e INSYTE_API_KEY=your-api-key -- node "$HOME\insyte-mcp\server\index.mjs"
+node "$HOME\insyte-mcp\server\index.mjs" add main
 ```
 
-3. Check it connected:
+3. Connect it to Claude Code. No key goes in this command:
+
+**Mac / Linux**
+
+```bash
+claude mcp add insyte --scope user -- node ~/insyte-mcp/server/index.mjs
+```
+
+**Windows (PowerShell)**
+
+```powershell
+claude mcp add insyte --scope user -- node "$HOME\insyte-mcp\server\index.mjs"
+```
+
+4. Check it connected:
 
 ```bash
 claude mcp list
@@ -235,29 +251,44 @@ Remove the key from it first.
 
 ## Using more than one Insyte system
 
-Support staff who work across several clients can add one copy per system, each with its own name
-and key:
+One install can read as many Insyte systems as you need, for example each client you support, or a
+dealer's separate regions. Give each system a name and add its key once:
 
 ```bash
-claude mcp add insyte-acme --scope user -e INSYTE_API_KEY=acme-key -- node ~/insyte-mcp/server/index.mjs
+node ~/insyte-mcp/server/index.mjs add acme
 ```
 
 ```bash
-claude mcp add insyte-demo --scope user -e INSYTE_API_KEY=demo-key -- node ~/insyte-mcp/server/index.mjs
+node ~/insyte-mcp/server/index.mjs add acme-nz
 ```
 
-Then say which one you mean: "Using insyte-acme, how many open jobs are there?"
+Then start a new chat and name the system in your question: "In acme, how many open jobs are
+there?" Claude passes the name to every lookup. When you have more than one system and don't say
+which, Claude asks rather than guessing, so you never get one client's data in place of another's.
 
-In Claude Desktop you can install the extension only once, so add the extra systems through Claude Code
-or a manual config (see [For developers](#for-developers)).
+| To | Run |
+|---|---|
+| See your systems | `node ~/insyte-mcp/server/index.mjs list` |
+| Check every key still works | `node ~/insyte-mcp/server/index.mjs test` |
+| Remove a system and delete its key | `node ~/insyte-mcp/server/index.mjs remove acme` |
+
+On Windows, use `"$HOME\insyte-mcp\server\index.mjs"` in place of `~/insyte-mcp/server/index.mjs`.
+
+**Claude Desktop users:** download the zip from [step 2B](#2b--claude-code) and run the same `add`
+commands. The extension reads systems from the same credential store, so they show up beside the
+one in the extension's settings. That one is named by **Name for this system** (default `main`).
+
+Ask "Which Insyte systems can you see?" to check what Claude has.
 
 ## Keeping data safe
 
 - **Read-only.** The extension has no tools that create, change or delete anything.
 - **Customer details go to Claude.** Results can include names, addresses and phone numbers. Pick
   the key's Rep so it only sees what the people using it should see.
-- **The key stays on your computer.** Claude Desktop keeps it in the system's secure storage. The
-  server only ever sends it to the configured Insyte address.
+- **Keys stay on your computer, encrypted.** Claude Desktop keeps the extension's key in the
+  system's secure storage, and the `add` command stores keys in Windows Credential Manager or the
+  macOS Keychain. No key is written to a settings file. The server only sends each key to the Insyte
+  address it belongs to.
 - **Lost laptop, or someone leaves?** Delete their key on the Api Integration page. It stops working
   within moments.
 
@@ -268,7 +299,8 @@ or a manual config (see [For developers](#for-developers)).
 | **Update** | Download the new `.mcpb` and install it over the old one | Unzip the new version over the old folder |
 | **Remove** | Settings → Extensions → **Insyte** → Uninstall | `claude mcp remove insyte --scope user` |
 
-Remember to delete the key in Insyte if it is no longer used.
+Uninstalling leaves keys added with `add` in the credential store. Run `remove <name>` for each one
+first, and delete the key in Insyte if nobody uses it.
 
 ---
 
@@ -315,25 +347,38 @@ Results are capped at 1,000 rows per call and trimmed to fit Claude's context, w
 
 <br>
 
+Systems come from the `add` command (keys in the OS credential store, names and hosts in
+`~/.insyte-mcp/systems.json`) plus, optionally, one key passed by environment variable. The Claude
+Desktop extension uses the environment variable and keeps the key in its own secure storage.
+
 | Variable | Default | Notes |
 |---|---|---|
-| `INSYTE_API_KEY` | (required) | READ key from Api Integration |
-| `INSYTE_API_BASE` | `auto` | `auto` tries each Insyte region. Or paste the *API Endpoint* from the Api Integration page; a trailing `/v1`, `/v2` or `/v3` is fine |
+| `INSYTE_API_KEY` | (none) | READ key from Api Integration. Optional when systems were added with `add` |
+| `INSYTE_SYSTEM_NAME` | `main` | Name for the `INSYTE_API_KEY` system |
+| `INSYTE_API_BASE` | `auto` | Endpoint for the `INSYTE_API_KEY` system. `auto` tries each Insyte region. Or paste the *API Endpoint* from the Api Integration page; a trailing `/v1`, `/v2` or `/v3` is fine |
 | `INSYTE_API_VERSION` | `auto` | `v2`, `v3`, or `auto` (v3 when available) |
+| `INSYTE_MCP_HOME` | `~/.insyte-mcp` | Folder for the systems registry |
 
-Manual config for Claude Desktop (`claude_desktop_config.json`) or other MCP clients:
+Manual config for Claude Desktop (`claude_desktop_config.json`) or other MCP clients, after adding
+systems with `add`:
 
 ```json
 {
   "mcpServers": {
     "insyte": {
       "command": "node",
-      "args": ["C:\\Users\\you\\insyte-mcp\\server\\index.mjs"],
-      "env": { "INSYTE_API_KEY": "your-api-key" }
+      "args": ["C:\\Users\\you\\insyte-mcp\\server\\index.mjs"]
     }
   }
 }
 ```
+
+> [!WARNING]
+> Don't put `INSYTE_API_KEY` in a config file's `env` block. Those files are plain text, and
+> Accent's password policy forbids storing credentials unencrypted. Use `add` instead.
+
+Design notes, the security model, and the plan for a hosted claude.ai connector are in
+[docs/technical.md](docs/technical.md).
 
 </details>
 
@@ -363,6 +408,14 @@ INSYTE_API_KEY=... npm run test:live
 related list, the codes in `insyte_describe_dataset`, paging, and error messages. It prints IDs and
 counts, never record contents, and exits 1 on any failure.
 
+```bash
+INSYTE_API_KEY=... npm run test:systems
+```
+
+`test/systems.mjs` adds the key under two names in an isolated credential-store service, checks
+`add`, `list`, `test` and `remove`, drives the server through both systems, then deletes the keys
+and confirms they are gone.
+
 </details>
 
 <details>
@@ -372,7 +425,9 @@ counts, never record contents, and exits 1 on any failure.
 
 - **Write actions:** create web leads, attach documents, Live Diary bookings. These need a READ-WRITE key
   and a confirmation step, so they are left out of this version.
-- **Hosted connector:** one install for a whole team in claude.ai, with no per-person setup.
+- **Hosted connector:** add Insyte from claude.ai's connector settings, sign in, and manage
+  systems there, with no download. Same tools as this version. Plan and open decisions in
+  [docs/technical.md](docs/technical.md#hosted-connector-plan).
 - **v3 field names:** check results once 26.3.0.0 reaches production, since v3 renames some fields.
 
 </details>

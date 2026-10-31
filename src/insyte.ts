@@ -104,8 +104,8 @@ export class InsyteClient {
       await this.load();
     }
     this.authWarning =
-      `${rejected.join(" and ")} rejected INSYTE_API_KEY. The key may be wrong, deleted, or belong to a user without an API licence` +
-      (this.candidates.length === 1 ? `, or INSYTE_API_BASE may point at the wrong region (${otherHosts(this.base)}).` : ".");
+      `${rejected.join(" and ")} rejected the API key. The key may be wrong, deleted, or belong to a user without an API licence` +
+      (this.candidates.length === 1 ? `, or the endpoint setting may point at the wrong region (${otherHosts(this.base)}).` : ".");
   }
 
   private async load(): Promise<void> {
@@ -414,8 +414,8 @@ function explain(status: number, body: string, origin: string, explicitBase: boo
   }
   const hint =
     status === 401 || status === 403
-      ? ` ${new URL(origin).host} rejected INSYTE_API_KEY. The key must exist under Settings > Integration > Api Integration, belong to a licensed user, and have READ scope.` +
-        (explicitBase ? ` INSYTE_API_BASE must also match the API Endpoint shown on that page (${otherHosts(origin)}).` : "")
+      ? ` ${new URL(origin).host} rejected the API key. The key must exist under Settings > Integration > Api Integration, belong to a licensed user, and have READ scope.` +
+        (explicitBase ? ` The endpoint setting must also match the API Endpoint shown on that page (${otherHosts(origin)}).` : "")
       : status === 400
         ? " The OData query is probably invalid; check field names with insyte_describe_dataset."
         : status === 404
