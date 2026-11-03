@@ -18,7 +18,8 @@
     "test:systems": "node test/systems.mjs",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --minify-syntax --legal-comments=none --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\" --outfile=build/mcpb/server/index.mjs --log-level=warning",
     "package": "node scripts/package.mjs",
-    "test:region": "node test/region.mjs"
+    "test:region": "node test/region.mjs",
+    "test:offline": "tsc && node test/offline.mjs"
   },
   "engines": {
     "node": ">=20"
