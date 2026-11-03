@@ -13,6 +13,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:http": "node dist/http.js",
     "smoke": "node test/smoke.mjs",
     "test:live": "node test/live.mjs",
     "test:systems": "node test/systems.mjs",

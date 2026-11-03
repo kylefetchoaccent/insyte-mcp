@@ -1,0 +1,20 @@
+# Keep the build context small and keep secrets out of it.
+.git
+node_modules
+dist
+build
+release
+downloads
+mcpb
+scripts
+test
+docs
+*.md
+.env*
+*.pem
+*.key
+tokens*.json
+*.log
+Dockerfile
+.dockerignore
+.claude
