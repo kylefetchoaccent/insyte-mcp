@@ -151,7 +151,7 @@ export class InsyteClient {
     }
   }
 
-  // Code-valued string fields of a data set and the codes seen in its most recent records.
+  // Code-valued string fields of a data set and the codes seen in its newest and, for large sets, oldest records.
   async codeValues(setName: string): Promise<Map<string, string[]>> {
     const set = this.dataSet(setName);
     const cached = this.codes.get(set.name);
@@ -159,11 +159,11 @@ export class InsyteClient {
     const strings = set.fields.filter((f) => f.type === "Edm.String").map((f) => f.name);
     const found = new Map<string, string[]>();
     if (strings.length) {
-      const { rows } = await this.query(set.name, {
-        select: strings.join(","),
-        orderby: `${set.key[0]} desc`,
-        limit: CODE_SAMPLE_ROWS,
-      });
+      // Composite keys: order by the first key field only; any stable field serves a sample.
+      const sample = (dir: string) => this.query(set.name, { select: strings.join(","), orderby: `${set.key[0]} ${dir}`, limit: CODE_SAMPLE_ROWS });
+      const rows = [...(await sample("desc")).rows];
+      // A full newest sample means older rows exist and may hold other codes. A short one is the whole set.
+      if (rows.length >= CODE_SAMPLE_ROWS) rows.push(...(await sample("asc")).rows);
       const seen = new Map<string, Set<string>>();
       const plain = new Set<string>();
       for (const row of rows as Record<string, unknown>[]) {
@@ -203,7 +203,7 @@ export class InsyteClient {
     const set = this.dataSet(setName);
     if (!relation) {
       if (opts.select) checkSelect(set, opts.select);
-      return this.readable(set, opts.select, (select) => this.list(`/${this.version}/${set.name}`, { ...opts, select }));
+      return this.readable(set, opts.select, (select) => this.list(`/${this.version}/${set.name}`, { ...opts, select, orderby: opts.orderby ?? keyOrder(set) }));
     }
 
     const rel = set.related.find((r) => r.toLowerCase() === relation.name.toLowerCase());
@@ -220,7 +220,7 @@ export class InsyteClient {
     if (opts.select && target) checkSelect(target, opts.select);
 
     return this.readable(target, opts.select, async (select) => {
-      const o = { ...opts, select };
+      const o = { ...opts, select, orderby: opts.orderby ?? (target ? keyOrder(target) : undefined) };
       try {
         // A single-valued relation (e.g. JobLines(1)/Job) rejects paging options.
         if (nav && !nav.collection) {
@@ -458,6 +458,11 @@ function unreadableColumns(err: unknown, set: DataSet): string[] {
   if (!(err instanceof InsyteError) || err.status !== 500) return [];
   const named = [...err.message.matchAll(/Invalid column name '(\w+)'/g)].map((m) => m[1]);
   return set.fields.map((f) => f.name).filter((n) => named.includes(n));
+}
+
+// Paging with $skip needs a stable order; without $orderby the database may reorder between calls.
+function keyOrder(set: DataSet): string | undefined {
+  return set.key.length ? set.key.join(",") : undefined;
 }
 
 function keyLiteral(set: DataSet, id: string | number): string {
