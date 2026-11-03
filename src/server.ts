@@ -81,7 +81,7 @@ Workflow: call insyte_list_datasets to find the right data set, insyte_describe_
 OData tips:
 - Filter syntax: contains(LastName,'smith'), startswith(Email,'kerry'), JobDate ge 2026-07-01T00:00:00Z, and/or/not.
 - Dates are ISO 8601 without quotes.
-- Status, Stage, Type and similar fields hold codes such as stage_job_quote, status_job_open or status_invoice_sent, not the plain words in their descriptions. Filtering on the plain word (Stage eq 'quote') matches nothing and gives a wrong count of zero. insyte_describe_dataset lists the codes seen in recent records; filter on the exact code, e.g. Stage eq 'stage_job_quote'.
+- Status, Stage, Type and similar fields hold codes such as stage_job_quote, status_job_open or status_invoice_sent, not the plain words in their descriptions. Filtering on the plain word (Stage eq 'quote') matches nothing and gives a wrong count of zero. insyte_describe_dataset lists the codes seen in sampled records (newest, plus oldest on large data sets); filter on the exact code, e.g. Stage eq 'stage_job_quote'.
 - Jobs and invoices carry no totals in API v2. Money is on the lines: expand JobLines or InvoiceLines with only the price fields you need and add them up.
 - Always pass select with only the fields you need; rows are large.
 - To count, use count=true with limit=1.
@@ -249,7 +249,7 @@ export function describeSet(s: DataSet, codes?: Map<string, string[]>): string {
     const seen = codes?.get(f.name);
     out.push(
       `- ${f.name} (${f.type.replace(/^Edm\./, "")}${f.nullable ? "" : ", required"})${f.description ? ` — ${f.description}` : ""}` +
-        (seen ? ` Codes seen in the 300 newest records (filter on these, not the words above; older records may hold others): ${seen.join(", ")}.` : ""),
+        (seen ? ` Codes seen in samples of the 300 newest and, when the newest sample was full, the 300 oldest records (filter on these, not the words above; other records may hold more): ${seen.join(", ")}.` : ""),
     );
   }
   if (s.navigations.length) {
