@@ -3,3 +3,5 @@ dist/
 .env
 build/
 release/
+evals/results/
+evals/golden/
