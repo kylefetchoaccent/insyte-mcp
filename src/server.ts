@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Connections } from "./connections.js";
 import { DataSet, InsyteError, QueryResult } from "./insyte.js";
+import { supportModule } from "./tools/support.js";
 
 export const VERSION = "0.2.2";
 
@@ -28,6 +29,7 @@ export interface ToolModule {
 
 const MODULES: ToolModule[] = [
   // One line per module, e.g. metricsModule,
+  supportModule,
 ];
 
 export interface ServerOptions {
