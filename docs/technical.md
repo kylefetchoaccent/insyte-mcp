@@ -1,8 +1,10 @@
 # Insyte MCP: technical design
 
-Version 0.2.2. For setup steps, see the [README](../README.md). This document covers how the server
+Version 0.3.0. For setup steps, see the [README](../README.md). This document covers how the server
 works, the contract its tools keep, how it stores credentials, and the plan for a hosted connector
-that people add from claude.ai's connector settings.
+that people add from claude.ai's connector settings. The hosted server's runbook is
+[hosted.md](hosted.md); what Accent must decide and build to host it is
+[hosting-for-accent.md](hosting-for-accent.md).
 
 Labels used below: **[VERIFIED]** means tested against a live tenant or read from code;
 **[UNVERIFIED]** means stated from documentation or belief and not yet checked;
@@ -20,11 +22,20 @@ Labels used below: **[VERIFIED]** means tested against a live tenant or read fro
 
 ## Architecture
 
-The server speaks MCP over stdio. Claude Desktop or Claude Code starts it as a child process.
+The server speaks MCP over stdio (`src/index.ts`), where Claude Desktop or Claude Code starts it as a
+child process, or over Streamable HTTP (`src/http.ts`) for the hosted connector. Both build the same
+server.
 
 | Module | Job |
 |---|---|
-| `src/index.ts` | MCP server: registers the tools, picks the system for each call, formats results. Hands `add`, `list`, `test` and `remove` to the CLI. |
+| `src/index.ts` | Stdio entry: loads the systems, picks the profile, connects. Hands `add`, `list`, `test` and `remove` to the CLI. |
+| `src/http.ts`, `src/auth.ts` | Hosted entry: stateless `POST /mcp`, bearer authentication (dev tokens or OAuth JWTs), protected-resource metadata, audit log, request limits. See [hosted.md](hosted.md). |
+| `src/server.ts` | Builds the MCP server: core tools, output helpers, and the tool modules for the profile. |
+| `src/connections.ts` | One person's systems, each connected on first use. |
+| `src/tools/metrics.ts`, `src/metrics/` | Verified metrics computed in the server. |
+| `src/tools/records.ts`, `src/codes.ts` | Find and overview tools; labels for codes the knowledge base confirms. |
+| `src/tools/support.ts`, `src/support/` | Accent staff tools (profile `support` only). |
+| `src/prompts.ts` | MCP prompts (slash commands) per profile. |
 | `src/insyte.ts` | Insyte API client for one system: region detection, `$metadata` parsing, OData queries, paging, fault workarounds. No Node-only APIs, so it can run in a Worker. |
 | `src/systems.ts` | Builds the list of systems from the registry file, the credential store and `INSYTE_API_KEY`. |
 | `src/keystore.ts` | Reads and writes keys in Windows Credential Manager, the macOS Keychain or libsecret. |
@@ -74,6 +85,25 @@ carry over unchanged.
 | `insyte_query` | `dataset`, `select?`, `filter?`, `orderby?`, `expand?`, `limit` (1-1000, default 50), `skip?`, `count?`, `system?` | `{ system?, returned, totalCount?, hasMore, nextSkip?, note?, skipped?, rows }` |
 | `insyte_get_record` | `dataset`, `id`, `select?`, `expand?`, `system?` | The record, or `{ system?, note?, record }` when there is a system or a note to report. |
 | `insyte_get_related` | `dataset`, `id`, `relation`, plus the query options, `system?` | Same shape as `insyte_query`. |
+| `insyte_list_metrics` | none | `{ metrics: [{ id, title, definition, dateField, unit, groupBy, caveats }] }`. Makes no Insyte calls. |
+| `insyte_metric` | `metric`, `from`, `to` (YYYY-MM-DD, `to` inclusive), `groupBy?` (none, month, rep), `system?` | `{ system?, metric, from, to, groupBy, value, groups?, matched, rowsScanned, unit, definition, dateField, query, caveats }`. Pages to the end; refuses past 20,000 rows. |
+| `insyte_find` | `query`, `kinds?` (contacts, companies, jobs, opportunities), `limit` (1-25, default 10), `system?` | `{ system?, results: { <kind>: { returned, hasMore, rows } or { error } }, note? }` |
+| `insyte_job_overview` | `id` or `reference`, `system?` | `{ system?, job, lines, deposit, invoices, activities, notes? }`, codes with `<Field>Label` beside them |
+| `insyte_customer_overview` | `contactId` or `companyId`, `system?` | The contact or company, plus its 10 newest `jobs` and `opportunities` with totals |
+| `insyte_docs_search` (support) | `query`, `limit` (1-10, default 5) | `{ query, searched, returned, hits: [{ file, heading, snippet }] }` over `INSYTE_DOCS_DIR` (Markdown or plain text) |
+| `insyte_compare_schemas` (support) | `systemA`, `systemB` | Text: counts, then data set, field, key and navigation differences |
+| `insyte_check_system` (support) | `system?`, `deep` (default false), `budgetSeconds` (default 60) | `{ system, connected, host, apiVersion, dataSets, authWarning?, deep? }` |
+
+**Profiles.** `public` (dealers and partners) gets every tool above except the three marked
+support. `support` (Accent staff) gets all of them. Locally, `INSYTE_MCP_PROFILE` picks the
+profile; hosted, the token's scope or claim does. Prompts follow the same split: `pipeline_review`,
+`job_lookup`, `deposits_outstanding`, `rep_scorecard` and `explain_number` for everyone, plus
+`diagnose_figure_difference` and `check_dealer_setup` for staff.
+
+**Open metric decisions.** [DECISION] Which line price field is revenue (`DiscountedPriceExTax` is
+used), whether closed revenue needs an order stage, earliest or last payment for multi-deposit
+jobs, and whether cancelled lines or `Qty` change the sum. Each is a caveat in the tool's output
+until settled.
 
 Rules every implementation keeps:
 
@@ -83,6 +113,8 @@ Rules every implementation keeps:
 - **Tagging.** With several systems, every data result carries `system`, so Claude can't mix up
   which client a row came from.
 - **Read-only.** Every tool carries `readOnlyHint: true`. No tool writes to Insyte.
+- **Stable paging.** When the caller gives no `orderby`, list queries order by the key, so `nextSkip`
+  pages do not overlap or skip rows. **[INFERRED]** that Insyte needs this; not observed live.
 - **Bounded output.** Results stop at 1,000 rows. The server emits compact JSON and keeps the most
   rows whose complete output fits in 60,000 characters, measured on the exact text returned, with
   `hasMore`, `nextSkip` and a note saying what was cut. A single record over the cap on its own (a
@@ -170,6 +202,8 @@ a .NET API over SQL Server **[INFERRED]**, so these belong in an Accent bug tick
 
 | Test | What it proves | Needs |
 |---|---|---|
+| `npm run test:offline` (`test/offline.mjs`) | Builds, then runs region, paging and every `test/*.offline.mjs` (order, metrics, records, prompts, support tools, HTTP and auth, evals plumbing) against mocks serving Insyte's real public schema from `test/fixtures/`. The commit gate (`.claude/verify.txt`). Proves code paths, not Insyte's behaviour. | Nothing |
+| `npm run eval` (`evals/`) | Accuracy and tool calls on 42 questions, plus token counts per tool result. See `evals/README.md`. | `ANTHROPIC_API_KEY`, `INSYTE_API_KEY` |
 | `npm run test:live` (`test/live.mjs`) | Every data set with and without `select`, every related list, codes, paging, the output cap, error messages, and that no output contains the key. 148 checks on the US tenant; prints SKIP where a tenant lacks the data for a check. Prints IDs and counts only. | `INSYTE_API_KEY` |
 | `npm run test:systems` (`test/systems.mjs`) | `add`/`list`/`test`/`remove`, the credential store round trip, system choice and tagging over MCP, a natural extension name, refusal to start with no systems, that removed keys are really gone, and that no output contains the key. 21 checks. Scans the server's stderr as well as tool output. Uses an isolated store service and registry, and cleans up even when a check throws or the run is stopped with Ctrl+C. | `INSYTE_API_KEY` |
 | `npm run test:region` (`test/region.mjs`) | Region detection with hosts up, down, rejecting or failing; that the key goes only on authentication probes; 403 and empty 204 probes, the single-endpoint warning, https enforcement. 16 checks against a mocked `fetch`. | Nothing |

@@ -65,6 +65,48 @@ const CODE_VALUE = /^[a-z]+(_[a-z0-9]+)+$/;
 const CODE_SAMPLE_ROWS = 300;
 const MAX_CODES = 25;
 
+// Opt-in, in-process cache for the public schema documents ($metadata, OpenAPI), shared by
+// every client that is given it. They carry no key and no tenant data, so sharing is safe.
+// Concurrent first users of one entry share a single download. Failures are never cached.
+export class SchemaCache {
+  private readonly entries = new Map<string, { at: number; value: unknown }>();
+  private readonly loading = new Map<string, Promise<unknown>>();
+  constructor(private readonly ttlMs = 3_600_000, private readonly maxEntries = 64) {}
+
+  // load returns undefined to say "nothing worth keeping"; that result is not stored.
+  async load<T>(key: string, load: () => Promise<T | undefined>): Promise<T | undefined> {
+    const hit = this.entries.get(key);
+    if (hit && Date.now() - hit.at < this.ttlMs) return hit.value as T;
+    const pending = this.loading.get(key);
+    if (pending) return pending as Promise<T | undefined>;
+    const p = load()
+      .then((value) => {
+        if (value !== undefined) {
+          this.entries.delete(key);
+          this.entries.set(key, { at: Date.now(), value });
+          // Hosts come from callers' system lists, so keep the table bounded.
+          while (this.entries.size > this.maxEntries) this.entries.delete(this.entries.keys().next().value!);
+        }
+        return value;
+      })
+      .finally(() => this.loading.delete(key));
+    this.loading.set(key, p);
+    return p;
+  }
+}
+
+export interface ClientOptions {
+  // Shared schema documents; unset (the stdio default) means every client downloads its own.
+  schemaCache?: SchemaCache;
+  // Wraps each Insyte request, e.g. to cap concurrency per principal and host. It holds its
+  // slot until the response body is read.
+  gate?: (url: string, run: () => Promise<Response>) => Promise<Response>;
+  // Per Insyte request, in milliseconds (default 60000).
+  timeoutMs?: number;
+  // Aborts every request of this client, e.g. when the caller has gone or timed out.
+  signal?: AbortSignal;
+}
+
 export class InsyteClient {
   base = "";
   version = "";
@@ -77,7 +119,7 @@ export class InsyteClient {
   private readonly candidates: string[];
   private readonly baseError?: string;
 
-  constructor(base: string, private readonly apiKey: string, private readonly requestedVersion: string) {
+  constructor(base: string, private readonly apiKey: string, private readonly requestedVersion: string, private opts: ClientOptions = {}) {
     // People paste the endpoint from the Api Integration page, which may include /v2 or /v3.
     let explicit = base.trim().toLowerCase() === "auto" ? "" : base.trim();
     if (explicit && !/^[a-z]+:\/\//i.test(explicit)) explicit = `https://${explicit}`;
@@ -86,6 +128,11 @@ export class InsyteClient {
     if (explicit && !/^https:\/\//i.test(explicit) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(explicit)) {
       this.baseError = `The endpoint "${explicit}" is not https. Use the https:// API Endpoint shown on the Api Integration page, or auto.`;
     }
+  }
+
+  // Connections builds clients without options; the hosted server adds them per request.
+  configure(opts: ClientOptions): void {
+    this.opts = { ...this.opts, ...opts };
   }
 
   async init(): Promise<void> {
@@ -125,10 +172,19 @@ export class InsyteClient {
     this.sets.clear();
     this.codes.clear();
     this.unreadable.clear();
-    this.version = this.requestedVersion === "auto" ? await this.detectVersion() : this.requestedVersion;
-    const xml = await this.text(`/${this.version}/$metadata`);
-    for (const set of parseMetadata(xml)) this.sets.set(set.name.toLowerCase(), set);
-    if (this.sets.size === 0) throw new InsyteError(`No data sets found in ${this.base}/${this.version}/$metadata`);
+    const cache = this.opts.schemaCache;
+    const host = this.base.toLowerCase();
+    // The version probe is cached per host; the schema per host and version.
+    this.version =
+      this.requestedVersion !== "auto" ? this.requestedVersion : cache ? (await cache.load(`version|${host}`, () => this.detectVersion()))! : await this.detectVersion();
+    const fetchSets = async (): Promise<DataSet[]> => {
+      const parsed = parseMetadata(await this.text(`/${this.version}/$metadata`));
+      if (parsed.length === 0) throw new InsyteError(`No data sets found in ${this.base}/${this.version}/$metadata`);
+      return parsed;
+    };
+    // Clone, because attachRelated writes into the sets.
+    const sets = cache ? structuredClone((await cache.load(`metadata|${host}|${this.version}`, fetchSets))!) : await fetchSets();
+    for (const set of sets) this.sets.set(set.name.toLowerCase(), set);
   }
 
   // Loaded only for the host that accepted the key: the OpenAPI document is close to 1 MB.
@@ -151,7 +207,7 @@ export class InsyteClient {
     }
   }
 
-  // Code-valued string fields of a data set and the codes seen in its most recent records.
+  // Code-valued string fields of a data set and the codes seen in its newest and, for large sets, oldest records.
   async codeValues(setName: string): Promise<Map<string, string[]>> {
     const set = this.dataSet(setName);
     const cached = this.codes.get(set.name);
@@ -159,11 +215,11 @@ export class InsyteClient {
     const strings = set.fields.filter((f) => f.type === "Edm.String").map((f) => f.name);
     const found = new Map<string, string[]>();
     if (strings.length) {
-      const { rows } = await this.query(set.name, {
-        select: strings.join(","),
-        orderby: `${set.key[0]} desc`,
-        limit: CODE_SAMPLE_ROWS,
-      });
+      // Composite keys: order by the first key field only; any stable field serves a sample.
+      const sample = (dir: string) => this.query(set.name, { select: strings.join(","), orderby: `${set.key[0]} ${dir}`, limit: CODE_SAMPLE_ROWS });
+      const rows = [...(await sample("desc")).rows];
+      // A full newest sample means older rows exist and may hold other codes. A short one is the whole set.
+      if (rows.length >= CODE_SAMPLE_ROWS) rows.push(...(await sample("asc")).rows);
       const seen = new Map<string, Set<string>>();
       const plain = new Set<string>();
       for (const row of rows as Record<string, unknown>[]) {
@@ -203,7 +259,7 @@ export class InsyteClient {
     const set = this.dataSet(setName);
     if (!relation) {
       if (opts.select) checkSelect(set, opts.select);
-      return this.readable(set, opts.select, (select) => this.list(`/${this.version}/${set.name}`, { ...opts, select }));
+      return this.readable(set, opts.select, (select) => this.list(`/${this.version}/${set.name}`, { ...opts, select, orderby: opts.orderby ?? keyOrder(set) }));
     }
 
     const rel = set.related.find((r) => r.toLowerCase() === relation.name.toLowerCase());
@@ -220,7 +276,7 @@ export class InsyteClient {
     if (opts.select && target) checkSelect(target, opts.select);
 
     return this.readable(target, opts.select, async (select) => {
-      const o = { ...opts, select };
+      const o = { ...opts, select, orderby: opts.orderby ?? (target ? keyOrder(target) : undefined) };
       try {
         // A single-valued relation (e.g. JobLines(1)/Job) rejects paging options.
         if (nav && !nav.collection) {
@@ -358,8 +414,16 @@ export class InsyteClient {
   // The OpenAPI document lists the /{set}({id})/{relation} routes. It is optional:
   // without it, related lists are simply unavailable.
   private async loadRelated(): Promise<Map<string, string[]>> {
+    const cache = this.opts.schemaCache;
+    if (!cache) return (await this.fetchRelated()) ?? new Map();
+    // A missing document is not cached, so the next client tries again.
+    const shared = await cache.load(`openapi|${this.base.toLowerCase()}|${this.version}`, () => this.fetchRelated());
+    return structuredClone(shared ?? new Map<string, string[]>());
+  }
+
+  private async fetchRelated(): Promise<Map<string, string[]> | undefined> {
     const related = new Map<string, string[]>();
-    let paths: Record<string, unknown> = {};
+    let paths: Record<string, unknown> | undefined;
     for (const doc of [`/openapi.${this.version}.json`, "/openapi.json"]) {
       try {
         paths = ((await this.json(`${this.base}${doc}`, false)) as { paths?: Record<string, unknown> }).paths ?? {};
@@ -368,6 +432,7 @@ export class InsyteClient {
         // try the next document
       }
     }
+    if (!paths) return undefined;
     const route = new RegExp(`^/${this.version}/([A-Za-z]+)\\(\\{[^}]+\\}\\)/([A-Za-z]+)$`);
     for (const [path, ops] of Object.entries(paths)) {
       const m = route.exec(path);
@@ -408,11 +473,31 @@ export class InsyteClient {
 
   private async fetch(url: string, accept: string, auth: boolean): Promise<Response> {
     let res: Response;
-    try {
-      res = await fetch(url, {
+    const send = async (): Promise<Response> => {
+      const timeout = AbortSignal.timeout(this.opts.timeoutMs ?? 60_000);
+      let signal = timeout;
+      const outer = this.opts.signal;
+      if (outer) {
+        // Manual join instead of AbortSignal.any, which needs Node 20.3.
+        const both = new AbortController();
+        for (const s of [timeout, outer]) s.aborted ? both.abort() : s.addEventListener("abort", () => both.abort(), { once: true });
+        signal = both.signal;
+      }
+      return fetch(url, {
         headers: auth ? { Authorization: `X-ApiKey ${this.apiKey}`, Accept: accept } : { Accept: accept },
-        signal: AbortSignal.timeout(60_000),
+        signal,
       });
+    };
+    try {
+      const gate = this.opts.gate;
+      // Under a gate, read the body before releasing the slot so the cap covers the whole transfer.
+      res = gate
+        ? await gate(url, async () => {
+            const r = await send();
+            const buf = await r.arrayBuffer();
+            return new Response(buf.byteLength ? buf : null, { status: r.status, statusText: r.statusText, headers: r.headers });
+          })
+        : await send();
     } catch (err) {
       throw new InsyteError(`Could not reach ${new URL(url).host}: ${(err as Error).message}`);
     }
@@ -458,6 +543,11 @@ function unreadableColumns(err: unknown, set: DataSet): string[] {
   if (!(err instanceof InsyteError) || err.status !== 500) return [];
   const named = [...err.message.matchAll(/Invalid column name '(\w+)'/g)].map((m) => m[1]);
   return set.fields.map((f) => f.name).filter((n) => named.includes(n));
+}
+
+// Paging with $skip needs a stable order; without $orderby the database may reorder between calls.
+function keyOrder(set: DataSet): string | undefined {
+  return set.key.length ? set.key.join(",") : undefined;
 }
 
 function keyLiteral(set: DataSet, id: string | number): string {

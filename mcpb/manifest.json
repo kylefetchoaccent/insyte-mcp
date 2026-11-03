@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "insyte",
   "display_name": "Insyte",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Read-only access to one or more Insyte Web tenants: jobs, job lines, contacts, companies, opportunities, invoices, payments and more.",
   "long_description": "Lets Claude query one or more Insyte Web tenants through the Insyte API (OData). It reads the API's metadata at startup, so every data set the tenant exposes is available with Insyte's own field descriptions. Read-only. Needs a READ API key from Settings > Integration > Api Integration (Professional edition, API licensed). Claude sees exactly what the key's Rep can see. To add more Insyte systems, run the add command from the insyte-mcp download; the extension picks them up from the OS credential store.",
   "author": {
@@ -48,6 +48,26 @@
     {
       "name": "insyte_get_related",
       "description": "Follow a related list from one record, e.g. a job's lines"
+    },
+    {
+      "name": "insyte_list_metrics",
+      "description": "List the verified metrics with their definitions and caveats"
+    },
+    {
+      "name": "insyte_metric",
+      "description": "Compute one verified metric (sold or closed revenue, service jobs, jobs by stage, won opportunities) over a date range"
+    },
+    {
+      "name": "insyte_find",
+      "description": "Find contacts, companies, jobs and opportunities by name, email, phone or reference"
+    },
+    {
+      "name": "insyte_job_overview",
+      "description": "One job with its lines, deposit status, invoices and recent activity"
+    },
+    {
+      "name": "insyte_customer_overview",
+      "description": "A contact or company with its recent jobs and opportunities"
     }
   ],
   "user_config": {
