@@ -88,6 +88,8 @@ fs.mkdirSync(path.join(docs, "sub"), { recursive: true });
 fs.writeFileSync(path.join(docs, "pricing.md"), "# Pricing\n\nIntro text about pricing.\n\n## Importing price lists\n\nTo import a price list, upload the CSV file on the Price Lists page. The import checks every row.\n\n## Discounts\n\nDiscounts apply per customer group.\n");
 fs.writeFileSync(path.join(docs, "sub", "misc.md"), "# Misc\n\n" + "Filler words about nothing in particular. ".repeat(80) + "One stray mention of import appears here.\n\n## Fabrics\n\nFabric libraries hold swatches and colours.\n");
 for (let i = 1; i <= 12; i++) fs.writeFileSync(path.join(docs, `widget${i}.md`), `# Widget note ${i}\n\nThe widget number ${i} needs care.\n`);
+// Plain text like the Confluence export: title on the first line, no headings.
+fs.writeFileSync(path.join(docs, "IWDOC-99. Discontinued dates-0101.txt"), "Discontinued Dates for Fabrics\r\nA fabric can carry a discontinued date.\r\n\r\nAfter the date the configurator hides the swatch.\r\n");
 const hub = await inProcess([["main", "http://127.0.0.1:9"]], "support");
 
 delete process.env.INSYTE_DOCS_DIR;
@@ -112,6 +114,9 @@ r = await call(hub, "insyte_docs_search", { query: "widget", limit: 10 });
 check("limit 10 returns 10 of 12", parse(r).returned === 10, parse(r).returned);
 r = await call(hub, "insyte_docs_search", { query: "widget", limit: 11 });
 check("limit above 10 is refused", r.isError, r);
+r = await call(hub, "insyte_docs_search", { query: "discontinued configurator swatch" });
+out = parse(r);
+check("plain-text page: indexed, titled by its first line", out.hits[0]?.heading === "Discontinued Dates for Fabrics" && /\.txt$/.test(out.hits[0].file) && /configurator/.test(out.hits[0].snippet), out.hits);
 r = await call(hub, "insyte_docs_search", { query: "zzzznomatch" });
 check("no match returns zero hits", parse(r).returned === 0, r);
 // Lazy, once per process: a file added after the first search is not seen.

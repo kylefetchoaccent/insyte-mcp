@@ -1,4 +1,4 @@
-// Ranked keyword search over a folder of Markdown files, split by heading. The folder is
+// Ranked keyword search over a folder of Markdown or plain-text files, split by heading. The folder is
 // named by INSYTE_DOCS_DIR. The index is built once per folder per process.
 
 import fs from "node:fs";
@@ -52,7 +52,7 @@ function* markdownFiles(dir: string): Generator<string> {
       const full = path.join(d, e.name);
       if (e.isDirectory()) {
         if (!e.name.startsWith(".") && e.name !== "node_modules") stack.push(full);
-      } else if (e.isFile() && /\.(md|markdown)$/i.test(e.name)) yield full;
+      } else if (e.isFile() && /\.(md|markdown|txt)$/i.test(e.name)) yield full;
     }
   }
 }
@@ -79,6 +79,30 @@ export function splitSections(file: string, md: string): { heading: string; text
   return out;
 }
 
+// Plain-text pages (the Confluence export) have no headings: the first line is the page
+// title, and the body splits into paragraph chunks so a long page ranks by its relevant part.
+const TEXT_CHUNK_CHARS = 2000;
+
+export function splitText(file: string, txt: string): { heading: string; text: string }[] {
+  const lines = txt.split(/\r?\n/);
+  const first = lines.findIndex((l) => l.trim());
+  if (first < 0) return [];
+  const title = lines[first].trim() || path.basename(file).replace(/\.txt$/i, "");
+  const out: { heading: string; text: string }[] = [];
+  let chunk = "";
+  for (const para of lines.slice(first + 1).join("\n").split(/\n\s*\n/)) {
+    const p = para.trim();
+    if (!p) continue;
+    if (chunk && chunk.length + p.length > TEXT_CHUNK_CHARS) {
+      out.push({ heading: title, text: chunk });
+      chunk = "";
+    }
+    chunk = chunk ? `${chunk}\n\n${p}` : p;
+  }
+  if (chunk || !out.length) out.push({ heading: title, text: chunk || title });
+  return out;
+}
+
 export function buildIndex(dir: string): DocsIndex {
   const sections: Section[] = [];
   let files = 0;
@@ -93,7 +117,7 @@ export function buildIndex(dir: string): DocsIndex {
     }
     files++;
     const rel = path.relative(dir, full).split(path.sep).join("/");
-    for (const s of splitSections(rel, md)) {
+    for (const s of /\.txt$/i.test(rel) ? splitText(rel, md) : splitSections(rel, md)) {
       const terms = new Map<string, number>();
       const body = tokens(s.text);
       const head = tokens(s.heading);
