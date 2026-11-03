@@ -8,6 +8,7 @@ import { Connections } from "./connections.js";
 import { DataSet, InsyteError, QueryResult } from "./insyte.js";
 import { promptsModule } from "./prompts.js";
 import { supportModule } from "./tools/support.js";
+import { metricsModule } from "./tools/metrics.js";
 
 export const VERSION = "0.2.2";
 
@@ -29,9 +30,10 @@ export interface ToolModule {
 }
 
 const MODULES: ToolModule[] = [
-  // One line per module, e.g. metricsModule,
+  // One line per module.
   promptsModule,
   supportModule,
+  metricsModule,
 ];
 
 export interface ServerOptions {
