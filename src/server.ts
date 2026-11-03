@@ -11,7 +11,7 @@ import { supportModule } from "./tools/support.js";
 import { metricsModule } from "./tools/metrics.js";
 import { recordsModule } from "./tools/records.js";
 
-export const VERSION = "0.2.2";
+export const VERSION = "0.3.0";
 
 // "public" is what dealers and partners get. "support" adds Accent-staff tools.
 export type Profile = "public" | "support";
